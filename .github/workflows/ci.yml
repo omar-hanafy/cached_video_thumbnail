@@ -177,7 +177,7 @@ jobs:
           arch: x86_64
           disable-linux-hw-accel: false
           working-directory: example
-          script: flutter test integration_test/thumbnail_test.dart --no-pub -d "$ANDROID_SERIAL"
+          script: bash ../.github/scripts/run-android-integration.sh
 
   test-ios:
     name: iOS integration and native tests
@@ -203,6 +203,7 @@ jobs:
 
       - name: Boot iPhone simulator
         id: simulator
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -217,9 +218,23 @@ jobs:
           xcrun simctl bootstatus "$device" -b
 
       - name: Run hermetic integration tests
+        timeout-minutes: 15
         env:
           IOS_DEVICE: ${{ steps.simulator.outputs.device }}
-        run: flutter test integration_test/thumbnail_test.dart --no-pub -d "$IOS_DEVICE"
+        run: flutter test integration_test/thumbnail_test.dart --no-pub --verbose --reporter expanded -d "$IOS_DEVICE"
+
+      - name: Capture iOS startup diagnostics
+        if: failure()
+        timeout-minutes: 2
+        env:
+          IOS_DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          xcrun simctl list devices available
+          if [ -n "$IOS_DEVICE" ]; then
+            xcrun simctl spawn "$IOS_DEVICE" launchctl list || true
+            xcrun simctl spawn "$IOS_DEVICE" log show --last 5m --style compact \
+              --predicate 'process == "Runner" OR process == "SpringBoard" OR eventMessage CONTAINS[c] "cached_video_thumbnail"' || true
+          fi
 
       - name: Run native cancellation tests
         env:
