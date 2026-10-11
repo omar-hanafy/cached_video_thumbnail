@@ -76,7 +76,8 @@ Docs: `doc/ai/README.md`.
 ## Device / integration tests
 
 CI runs the hermetic suite on Android and iOS simulators, plus the iOS native
-cancellation tests. Run real-network checks explicitly on available devices:
+cancellation tests. See `example/README.md` for the iOS XCTest CI runner and its
+coverage check. Run real-network checks explicitly on available devices:
 
 ```sh
 cd example
