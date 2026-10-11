@@ -84,6 +84,10 @@ void main() {
     'removing the last listener before completion cancels the request',
     () async {
       extractor.gated = true;
+      final committed = Completer<void>();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+      };
       final provider = VideoThumbnailImage(asset, engine: engine);
       // Drive loadImage directly so the ImageCache's pending-image listener
       // does not keep the stream alive.
@@ -93,11 +97,10 @@ void main() {
       );
       final listener = ImageStreamListener((_, _) {});
       completer.addListener(listener);
-      await pumpEventQueue();
+      await extractor.waitForCalls(1);
       expect(extractor.callCount, 1);
 
       completer.removeListener(listener);
-      await pumpEventQueue();
       expect(
         extractor.cancelled,
         isNotEmpty,
@@ -105,7 +108,7 @@ void main() {
       );
 
       extractor.release();
-      await pumpEventQueue();
+      await committed.future;
       expect(engine.metrics.cancellations, 1);
     },
   );
@@ -128,11 +131,15 @@ void main() {
     'resolve cancels when the last consumer leaves a pending image',
     () async {
       extractor.gated = true;
+      final committed = Completer<void>();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+      };
       final provider = VideoThumbnailImage(asset, engine: engine);
       final stream = provider.resolve(ImageConfiguration.empty);
       final listener = ImageStreamListener((info, _) => info.dispose());
       stream.addListener(listener);
-      await pumpEventQueue();
+      await extractor.waitForCalls(1);
       expect(extractor.callCount, 1);
       expect(
         PaintingBinding.instance.imageCache.statusForKey(provider).pending,
@@ -140,7 +147,6 @@ void main() {
       );
 
       stream.removeListener(listener);
-      await pumpEventQueue();
       expect(extractor.cancelled, hasLength(1));
       expect(
         PaintingBinding.instance.imageCache.statusForKey(provider).pending,
@@ -148,7 +154,7 @@ void main() {
       );
 
       extractor.release();
-      await pumpEventQueue();
+      await committed.future;
       expect(engine.metrics.cancellations, 1);
     },
   );
@@ -157,6 +163,10 @@ void main() {
     'a shared pending image survives until its last consumer leaves',
     () async {
       extractor.gated = true;
+      final committed = Completer<void>();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+      };
       final a = VideoThumbnailImage(asset, engine: engine);
       final b = VideoThumbnailImage(asset, engine: engine);
       final first = a.resolve(ImageConfiguration.empty);
@@ -165,11 +175,10 @@ void main() {
       final secondListener = ImageStreamListener((info, _) => info.dispose());
       first.addListener(firstListener);
       second.addListener(secondListener);
-      await pumpEventQueue();
+      await extractor.waitForCalls(1);
       expect(extractor.callCount, 1);
 
       first.removeListener(firstListener);
-      await pumpEventQueue();
       expect(extractor.cancelled, isEmpty);
       expect(
         PaintingBinding.instance.imageCache.statusForKey(a).pending,
@@ -177,10 +186,9 @@ void main() {
       );
 
       second.removeListener(secondListener);
-      await pumpEventQueue();
       expect(extractor.cancelled, hasLength(1));
       extractor.release();
-      await pumpEventQueue();
+      await committed.future;
     },
   );
 

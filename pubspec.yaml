@@ -23,6 +23,9 @@ dependencies:
   meta: ^1.19.0
   path: ^1.9.1
   path_provider: ^2.1.6
+  # Own this runtime floor: path_provider still permits platform 3.0.0,
+  # which calls Platform.packageRoot, removed from supported Dart SDKs.
+  platform: ^3.2.0
 
 dev_dependencies:
   fake_async: ^1.3.3

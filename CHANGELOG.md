@@ -20,6 +20,7 @@
   video metadata.
 - Update Android build support to AGP 9.3.1, Gradle 9.7.0, and Kotlin
   2.4.21, and refresh supported Dart dependencies and generated channels.
+  Require a Dart-compatible minimum for the transitive `platform` package.
 - Fix error handling and disposal in the example benchmark and playground.
 - Add a `migrate-v0-1-to-v0-2` agent skill covering the SDK requirements,
   cache regeneration, and cancellation behavior.
