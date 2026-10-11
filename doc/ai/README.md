@@ -80,6 +80,10 @@ semantic diffs (bytes vs files, nulls vs typed errors, WebP removal,
 platform gates), ordered steps, validation, rollback. Try: *"Replace
 video_thumbnail across lib/."*
 
+The **`migrate-v0-1-to-v0-2`** skill covers the Flutter 3.47.7 / Dart 3.13.5
+minimums, automatic cache regeneration, and bounded native work after
+cancellation when upgrading an existing 0.1.x consumer.
+
 ### Agent (Claude Code only)
 
 **`thumbnail-integration-auditor`** - an isolated, read-only subagent
@@ -100,7 +104,7 @@ by the auditor agent.
 
 The plugin version equals the package version (enforced by
 `tool/validate_agent_plugin.dart` in CI). Skill content targets
-`cached_video_thumbnail` 0.1.x. Skills instruct the agent to verify the
+`cached_video_thumbnail` 0.2.x. Skills instruct the agent to verify the
 installed package version and trust `.pub-cache` sources over skill text
 if they ever disagree.
 

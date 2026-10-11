@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' show sha1;
@@ -9,7 +10,7 @@ import '../video_source.dart';
 
 /// Schema version baked into every canonical key. Bumping it invalidates the
 /// whole cache wholesale (files also live under a directory named after it).
-const String cacheSchemaVersion = 'v1';
+const String cacheSchemaVersion = 'v2';
 
 /// Deterministic identity of one (source, spec) pair.
 ///
@@ -31,7 +32,7 @@ class CacheKey {
     required this.fileName,
   });
 
-  /// Full canonical string, e.g. `v1|a|pkg|assets/v.mp4|320x320|p0|e0|jpeg|q80`.
+  /// Full canonical string, e.g. `v2|a|pkg|assets/v.mp4|320x320|p0|e0|jpeg|q80`.
   final String canonical;
 
   /// Canonical source identity, e.g. `n|https://cdn.io/v.mp4`.
@@ -70,8 +71,10 @@ class CacheKey {
   /// Computes only the source-prefix hash for [source]; used by
   /// `ThumbnailEngine.evict`, which does not know the specs in play. Works
   /// for files that no longer exist.
-  static String sourcePrefixFor(VideoSource source) =>
-      sha1.convert(_sourceIdOf(source).codeUnits).toString().substring(0, 16);
+  static String sourcePrefixFor(VideoSource source) => sha1
+      .convert(utf8.encode(_sourceIdOf(source)))
+      .toString()
+      .substring(0, 16);
 
   static String _sourceIdOf(VideoSource source) => switch (source) {
     AssetVideoSource(:final assetKey, :final package) =>
@@ -93,11 +96,11 @@ class CacheKey {
         '|${spec.format.wireName}'
         '|q$quality';
     final sourcePrefix = sha1
-        .convert(sourceId.codeUnits)
+        .convert(utf8.encode(sourceId))
         .toString()
         .substring(0, 16);
     final fullHash = sha1
-        .convert(canonical.codeUnits)
+        .convert(utf8.encode(canonical))
         .toString()
         .substring(0, 24);
     return CacheKey._(

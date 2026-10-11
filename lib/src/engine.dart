@@ -69,6 +69,20 @@ class ThumbnailEngineConfig {
         'must be > 0',
       );
     }
+    if (defaultTimeout.isNegative) {
+      throw ArgumentError.value(
+        defaultTimeout,
+        'defaultTimeout',
+        'must be >= zero',
+      );
+    }
+    if (negativeCacheTtl.isNegative) {
+      throw ArgumentError.value(
+        negativeCacheTtl,
+        'negativeCacheTtl',
+        'must be >= zero',
+      );
+    }
     defaultSpec.validate();
   }
 }
@@ -159,7 +173,8 @@ class ThumbnailEngine {
   NegativeCache _negativeCache;
   DiskCache? _diskCache;
   Future<void>? _initFuture;
-  int _requestCounter = 0;
+  bool _cacheSizingLocked = false;
+  static int _requestCounter = 0;
 
   /// Optional structured event hook (logging, tracing).
   ThumbnailEventListener? onEvent;
@@ -179,7 +194,7 @@ class ThumbnailEngine {
     final cacheTouched =
         config.maxCacheBytes != _config.maxCacheBytes ||
         config.maxCacheEntries != _config.maxCacheEntries;
-    if (cacheTouched && _initFuture != null) {
+    if (cacheTouched && _cacheSizingLocked) {
       throw StateError(
         'cache sizing can only be configured before the first request',
       );
@@ -200,17 +215,13 @@ class ThumbnailEngine {
   }) {
     final effectiveSpec = spec ?? _config.defaultSpec;
     effectiveSpec.validate();
-    final request = _EngineRequest(this);
+    final effectiveTimeout = timeout ?? _config.defaultTimeout;
+    if (effectiveTimeout.isNegative) {
+      throw ArgumentError.value(effectiveTimeout, 'timeout', 'must be >= zero');
+    }
+    final request = _EngineRequest(this, priority);
     request._completer.future.ignore();
-    unawaited(
-      _start(
-        request,
-        source,
-        effectiveSpec,
-        priority,
-        timeout ?? _config.defaultTimeout,
-      ),
-    );
+    unawaited(_start(request, source, effectiveSpec, effectiveTimeout));
     return request;
   }
 
@@ -259,25 +270,38 @@ class ThumbnailEngine {
     _negativeCache.remove(key.fileName);
   }
 
-  Future<void> _ensureInitialized() => _initFuture ??= _init();
+  Future<void> _ensureInitialized() {
+    _cacheSizingLocked = true;
+    return _initFuture ??= _init().onError<Object>((error, stack) {
+      _initFuture = null;
+      Error.throwWithStackTrace(error, stack);
+    });
+  }
 
   Future<void> _init() async {
-    final directory = await _directoryResolver();
-    final cache = DiskCache(
-      directory: directory,
-      maxBytes: _config.maxCacheBytes,
-      maxEntries: _config.maxCacheEntries,
-      now: _now,
-    );
-    await cache.init();
-    _diskCache = cache;
+    try {
+      final directory = await _directoryResolver();
+      final cache = DiskCache(
+        directory: directory,
+        maxBytes: _config.maxCacheBytes,
+        maxEntries: _config.maxCacheEntries,
+        now: _now,
+      );
+      await cache.init();
+      _diskCache = cache;
+    } on FileSystemException catch (error) {
+      throw ThumbnailException(
+        ThumbnailErrorCode.io,
+        'failed to initialize thumbnail cache',
+        cause: error,
+      );
+    }
   }
 
   Future<void> _start(
     _EngineRequest request,
     VideoSource source,
     ThumbnailSpec spec,
-    ThumbnailPriority priority,
     Duration timeout,
   ) async {
     _recorder.incRequest();
@@ -319,13 +343,20 @@ class ThumbnailEngine {
       final existing = _flights[key.fileName];
       if (existing != null) {
         _recorder.incCoalesced();
-        _emit(ThumbnailEvent(ThumbnailEventKind.coalesced, key.fileName));
         existing.join(request);
+        _emit(ThumbnailEvent(ThumbnailEventKind.coalesced, key.fileName));
         return;
       }
 
       // 4. New flight.
-      final flight = _Flight(this, key, source, spec, priority, timeout);
+      final flight = _Flight(
+        this,
+        key,
+        source,
+        spec,
+        request._priority,
+        timeout,
+      );
       _flights[key.fileName] = flight;
       flight.launch();
       flight.join(request);
@@ -357,6 +388,14 @@ class ThumbnailEngine {
       // Listener bugs must never break the pipeline.
     }
   }
+
+  Future<void> _cancelNative(String requestId) async {
+    try {
+      await _extractor.cancel(requestId);
+    } on Object {
+      // Cancellation is best-effort even for an injected extractor.
+    }
+  }
 }
 
 /// One deduplicated in-flight extraction with N joined requests.
@@ -368,7 +407,7 @@ class _Flight {
     this.spec,
     this.priority,
     this.timeout,
-  ) : requestId = 'r${engine._requestCounter++}';
+  ) : requestId = 'r${ThumbnailEngine._requestCounter++}';
 
   final ThumbnailEngine engine;
   final CacheKey key;
@@ -387,8 +426,10 @@ class _Flight {
   /// (A settled flight can still be visible in the flight map for one
   /// microtask before its cleanup runs.)
   void join(_EngineRequest request) {
+    if (request._cancelled) return;
     _joiners.add(request);
     request._flight = this;
+    _job.bump(request._priority);
     _job.future.then(
       request._complete,
       onError: (Object error, StackTrace stack) =>
@@ -417,7 +458,7 @@ class _Flight {
               // The deadline passed: abort native work where supported so a
               // hung remote source cannot pin a decoder thread.
               _nativeCancelRequested = true;
-              unawaited(engine._extractor.cancel(requestId));
+              unawaited(engine._cancelNative(requestId));
             }
             engine._emit(
               ThumbnailEvent(
@@ -432,9 +473,7 @@ class _Flight {
             );
           },
         )
-        .whenComplete(() {
-          engine._flights.remove(key.fileName);
-        });
+        .whenComplete(_removeFlight);
   }
 
   Future<Thumbnail> _work(DateTime enqueuedAt) async {
@@ -451,57 +490,77 @@ class _Flight {
       );
     }
     final temp = engine._diskCache!.tempPathFor(key);
-    final extraction = await engine._extractor.extract(
-      requestId: requestId,
-      source: source,
-      spec: spec,
-      destPath: temp,
-    );
-    final path = await engine._diskCache!.commit(
-      key,
-      temp,
-      width: extraction.width,
-      height: extraction.height,
-    );
-    engine._recorder.recordExtraction(
-      queueWait: dispatchedAt.difference(enqueuedAt),
-      extract: engine._now().difference(dispatchedAt),
-    );
-    engine._emit(
-      ThumbnailEvent(
-        ThumbnailEventKind.extracted,
-        key.fileName,
-        elapsed: engine._now().difference(enqueuedAt),
-      ),
-    );
-    return Thumbnail(
-      filePath: path,
-      width: extraction.width,
-      height: extraction.height,
-      wasCached: false,
-    );
+    var committed = false;
+    try {
+      final extraction = await engine._extractor.extract(
+        requestId: requestId,
+        source: source,
+        spec: spec,
+        destPath: temp,
+      );
+      final path = await engine._diskCache!.commit(
+        key,
+        temp,
+        width: extraction.width,
+        height: extraction.height,
+      );
+      committed = true;
+      engine._recorder.recordExtraction(
+        queueWait: dispatchedAt.difference(enqueuedAt),
+        extract: engine._now().difference(dispatchedAt),
+      );
+      engine._emit(
+        ThumbnailEvent(
+          ThumbnailEventKind.extracted,
+          key.fileName,
+          elapsed: engine._now().difference(enqueuedAt),
+        ),
+      );
+      return Thumbnail(
+        filePath: path,
+        width: extraction.width,
+        height: extraction.height,
+        wasCached: false,
+      );
+    } finally {
+      if (!committed) {
+        try {
+          await File(temp).delete();
+        } on FileSystemException {
+          // The native writer has settled; leftover output is best-effort.
+        }
+      }
+    }
   }
 
   void onJoinerCancelled(_EngineRequest request) {
     _joiners.remove(request);
     if (_joiners.isNotEmpty || _job.isDone) return;
+    _removeFlight();
     if (_job.isRunning && !_nativeCancelRequested) {
       _nativeCancelRequested = true;
-      unawaited(engine._extractor.cancel(requestId));
+      unawaited(engine._cancelNative(requestId));
     }
     _job.cancel();
   }
 
   void bump(ThumbnailPriority newPriority) => _job.bump(newPriority);
+
+  void _removeFlight() {
+    if (identical(engine._flights[key.fileName], this)) {
+      engine._flights.remove(key.fileName);
+    }
+  }
 }
 
 class _EngineRequest implements ThumbnailRequest {
-  _EngineRequest(this.engine);
+  _EngineRequest(this.engine, this._priority);
 
   final ThumbnailEngine engine;
   final Completer<Thumbnail> _completer = Completer<Thumbnail>();
   _Flight? _flight;
   bool _cancelled = false;
+  ThumbnailPriority _priority;
 
   @override
   Future<Thumbnail> get result => _completer.future;
@@ -521,7 +580,11 @@ class _EngineRequest implements ThumbnailRequest {
   }
 
   @override
-  void bumpPriority(ThumbnailPriority priority) => _flight?.bump(priority);
+  void bumpPriority(ThumbnailPriority priority) {
+    if (_completer.isCompleted || priority.index <= _priority.index) return;
+    _priority = priority;
+    _flight?.bump(priority);
+  }
 
   void _complete(Thumbnail thumbnail) {
     if (!_completer.isCompleted) _completer.complete(thumbnail);

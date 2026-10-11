@@ -29,7 +29,7 @@ class NegativeCache {
   ThumbnailException? lookup(String key) {
     final entry = _entries[key];
     if (entry == null) return null;
-    if (_now().isAfter(entry.expiry)) {
+    if (!_now().isBefore(entry.expiry)) {
       _entries.remove(key);
       return null;
     }

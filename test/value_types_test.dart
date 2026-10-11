@@ -151,9 +151,9 @@ void main() {
       expect(() => ThumbnailSpec(quality: 0).validate(), throwsArgumentError);
       expect(() => ThumbnailSpec(quality: 101).validate(), throwsArgumentError);
       expect(
-        () => ThumbnailSpec(
-          position: const Duration(milliseconds: -1),
-        ).validate(),
+        () =>
+            ThumbnailSpec(position: const Duration(milliseconds: -1))
+                .validate(),
         throwsArgumentError,
       );
       expect(() => const ThumbnailSpec().validate(), returnsNormally);

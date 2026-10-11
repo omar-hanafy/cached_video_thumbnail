@@ -2,14 +2,14 @@ group = "tech.tomars.cached_video_thumbnail"
 version = "1.0-SNAPSHOT"
 
 buildscript {
-    val kotlinVersion = "2.3.20"
+    val kotlinVersion = "2.4.21"
     repositories {
         google()
         mavenCentral()
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:9.0.1")
+        classpath("com.android.tools.build:gradle:9.3.1")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
     }
 }
@@ -73,5 +73,5 @@ kotlin {
 
 dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-test")
-    testImplementation("org.mockito:mockito-core:5.0.0")
+    testImplementation("org.mockito:mockito-core:5.24.0")
 }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' show sha1;
@@ -15,7 +16,7 @@ void main() {
         spec,
       );
       expect(key.sourceId, 'a|pkg|assets/v.mp4');
-      expect(key.canonical, 'v1|a|pkg|assets/v.mp4|320x320|p0|e0|jpeg|q80');
+      expect(key.canonical, 'v2|a|pkg|assets/v.mp4|320x320|p0|e0|jpeg|q80');
     });
 
     test('asset without package uses empty package slot', () async {
@@ -118,11 +119,11 @@ void main() {
       expect(key.fileName, startsWith(key.sourcePrefix));
 
       final expectedSource = sha1
-          .convert('a|pkg|assets/v.mp4'.codeUnits)
+          .convert(utf8.encode('a|pkg|assets/v.mp4'))
           .toString()
           .substring(0, 16);
       final expectedFull = sha1
-          .convert('v1|a|pkg|assets/v.mp4|320x320|p0|e0|jpeg|q80'.codeUnits)
+          .convert(utf8.encode('v2|a|pkg|assets/v.mp4|320x320|p0|e0|jpeg|q80'))
           .toString()
           .substring(0, 24);
       expect(key.fileName, '$expectedSource-$expectedFull.jpg');
@@ -141,5 +142,19 @@ void main() {
       );
       expect(key.fileName, endsWith('.png'));
     });
+
+    test(
+      'different Unicode source names never alias through byte truncation',
+      () async {
+        final first = VideoSource.asset('\u0101.mp4');
+        final second = VideoSource.asset('\u0201.mp4');
+        final firstKey = await CacheKey.compute(first, spec);
+        final secondKey = await CacheKey.compute(second, spec);
+        expect(firstKey.fileName, isNot(secondKey.fileName));
+        expect(firstKey.sourcePrefix, isNot(secondKey.sourcePrefix));
+        expect(CacheKey.sourcePrefixFor(first), firstKey.sourcePrefix);
+        expect(CacheKey.sourcePrefixFor(second), secondKey.sourcePrefix);
+      },
+    );
   });
 }

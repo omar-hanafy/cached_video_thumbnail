@@ -31,11 +31,17 @@ class FakeExtractor implements ThumbnailExtractor {
   /// Request ids passed to [cancel].
   final List<String> cancelled = [];
 
+  /// Optional failure from the best-effort native cancel call.
+  Object? cancelFailure;
+
   /// Artificial latency before completing.
   Duration delay = Duration.zero;
 
   /// When set, every call throws this instead of producing a file.
   ThumbnailException? failWith;
+
+  /// Writes a partial output before throwing [failWith].
+  bool writeBeforeFailure = false;
 
   /// When true, calls block until [release] is invoked.
   bool gated = false;
@@ -52,6 +58,16 @@ class FakeExtractor implements ThumbnailExtractor {
   /// Number of extract calls seen.
   int get callCount => calls.length;
 
+  final List<(int, Completer<void>)> _callWaiters = [];
+
+  /// Completes when at least [count] extractions have actually dispatched.
+  Future<void> waitForCalls(int count) {
+    if (callCount >= count) return Future<void>.value();
+    final completer = Completer<void>();
+    _callWaiters.add((count, completer));
+    return completer.future;
+  }
+
   /// Releases every call currently blocked on the gate.
   void release() {
     _gate.complete();
@@ -66,6 +82,12 @@ class FakeExtractor implements ThumbnailExtractor {
     required String destPath,
   }) async {
     calls.add(FakeExtraction(requestId, source, spec, destPath));
+    for (final waiter in _callWaiters.toList()) {
+      if (callCount >= waiter.$1) {
+        _callWaiters.remove(waiter);
+        waiter.$2.complete();
+      }
+    }
     if (delay != Duration.zero) {
       await Future<void>.delayed(delay);
     }
@@ -73,7 +95,10 @@ class FakeExtractor implements ThumbnailExtractor {
       await _gate.future;
     }
     final failure = failWith;
-    if (failure != null) throw failure;
+    if (failure != null) {
+      if (writeBeforeFailure) await File(destPath).writeAsBytes(bytes);
+      throw failure;
+    }
     await File(destPath).writeAsBytes(bytes);
     return ExtractionResult(width: width, height: height);
   }
@@ -81,5 +106,7 @@ class FakeExtractor implements ThumbnailExtractor {
   @override
   Future<void> cancel(String requestId) async {
     cancelled.add(requestId);
+    final failure = cancelFailure;
+    if (failure != null) throw failure;
   }
 }

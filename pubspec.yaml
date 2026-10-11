@@ -1,6 +1,6 @@
 name: cached_video_thumbnail
 description: "High-performance video thumbnail engine: cached, scheduled, cancellable thumbnail generation from asset, file, and network videos."
-version: 0.1.1
+version: 0.2.0
 homepage: https://github.com/omar-hanafy/cached_video_thumbnail
 repository: https://github.com/omar-hanafy/cached_video_thumbnail
 issue_tracker: https://github.com/omar-hanafy/cached_video_thumbnail/issues
@@ -13,23 +13,23 @@ topics:
   - media
 
 environment:
-  sdk: ^3.12.0
-  flutter: ">=3.44.0"
+  sdk: ^3.13.5
+  flutter: ">=3.47.7"
 
 dependencies:
-  crypto: ^3.0.6
+  crypto: ^3.0.7
   flutter:
     sdk: flutter
-  meta: ^1.16.0
+  meta: ^1.19.0
   path: ^1.9.1
-  path_provider: ^2.1.5
+  path_provider: ^2.1.6
 
 dev_dependencies:
   fake_async: ^1.3.3
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
-  pigeon: ^27.1.0
+  pigeon: ^29.0.8
 
 flutter:
   plugin:

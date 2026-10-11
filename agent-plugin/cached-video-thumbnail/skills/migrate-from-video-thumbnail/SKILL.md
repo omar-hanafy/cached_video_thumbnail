@@ -22,7 +22,7 @@ cached, scheduled, and cancellable. Mapping tables:
 2. Verify the old package's actual API in the consumer's resolved version
    (`.pub-cache`) - forks differ in return types (`String?` vs `XFile`).
 3. **Platform gate**: cached_video_thumbnail supports Android (minSdk 24)
-   and iOS (13+) only. fc_native_video_thumbnail also runs on macOS and
+   and iOS (15+) only. fc_native_video_thumbnail also runs on macOS and
    Windows; flutter_video_thumbnail_plus has a web path. If the app builds
    those targets, keep the old package behind a platform branch for them or
    stop and surface the gap - do not silently drop platforms.
@@ -34,8 +34,8 @@ cached, scheduled, and cancellable. Mapping tables:
 
 ## Step 1 - dependencies
 
-In `pubspec.yaml`: add `cached_video_thumbnail: ^0.1.0` (needs Dart SDK
-^3.12, Flutter >= 3.44). Keep the old dependency until Step 4 verifies, so
+In `pubspec.yaml`: add `cached_video_thumbnail: ^0.2.0` (needs Dart SDK
+^3.13.5, Flutter >= 3.47.7). Keep the old dependency until Step 4 verifies, so
 the migration is revertible file-by-file; remove it as the final commit.
 
 ## Step 2 - convert call sites

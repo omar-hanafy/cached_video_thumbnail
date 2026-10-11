@@ -14,8 +14,8 @@ ahead of the viewport. API details: [api-quick-reference.md](references/api-quic
 
 Before writing code, establish (do not assume):
 
-1. `cached_video_thumbnail` version in `pubspec.lock`; this skill matches 0.1.x.
-2. Target platforms. The package supports **Android (minSdk 24) and iOS (13+)
+1. `cached_video_thumbnail` version in `pubspec.lock`; this skill matches 0.2.x.
+2. Target platforms. The package supports **Android (minSdk 24) and iOS (15+)
    only**. If the app also targets web/desktop, thumbnails need a platform
    branch; do not silently break those builds.
 3. Cell geometry: logical size of each thumbnail widget and how it is laid out

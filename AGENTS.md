@@ -50,9 +50,9 @@ and `test/pigeon_mapping_test.dart`.
 ## Release process
 
 - Branches: `main` = stable versions only; `dev` = `-dev.N` prereleases only
-  (CI enforces this on pubspec changes).
+  (CI enforces this on every protected-lane PR and push).
 - Flow: branch `release/X.Y.Z` -> bump `pubspec.yaml` + `CHANGELOG.md` -> PR
-  -> merge. A pubspec change on main/dev auto-tags
+  -> merge. A package-version change on main/dev auto-tags
   `cached_video_thumbnail-vX.Y.Z` and publishes to pub.dev via trusted
   publishing (`.github/workflows/`). Never re-tag or reuse a version.
 - Version sync: `pubspec.yaml`, both plugin manifests under
@@ -73,7 +73,10 @@ Docs: `doc/ai/README.md`.
 - Every future breaking release MUST ship a dedicated migration skill named
   `migrate-vA-to-vB` in the plugin before the release is tagged.
 
-## Device / integration tests (not run in CI)
+## Device / integration tests
+
+CI runs the hermetic suite on Android and iOS simulators, plus the iOS native
+cancellation tests. Run real-network checks explicitly on available devices:
 
 ```sh
 cd example

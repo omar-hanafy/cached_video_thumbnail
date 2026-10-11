@@ -1,29 +1,62 @@
-import Flutter
-import UIKit
+import AVFoundation
 import XCTest
-
-// If your plugin has been explicitly set to "type: .dynamic" in the Package.swift,
-// you will need to add your plugin as a dependency of RunnerTests within Xcode.
 
 @testable import cached_video_thumbnail
 
-// This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
-//
-// See https://developer.apple.com/documentation/xctest for more information about using XCTest.
-
-class RunnerTests: XCTestCase {
-
-  func testGetPlatformVersion() {
-    let plugin = ThumbnailPlugin()
-
-    let call = FlutterMethodCall(methodName: "getPlatformVersion", arguments: [])
-
-    let resultExpectation = expectation(description: "result block must be called.")
-    plugin.handle(call) { result in
-      XCTAssertEqual(result as! String, "iOS " + UIDevice.current.systemVersion)
-      resultExpectation.fulfill()
-    }
-    waitForExpectations(timeout: 1)
+final class RunnerTests: XCTestCase {
+  private func generator() -> AVAssetImageGenerator {
+    AVAssetImageGenerator(asset: AVURLAsset(url: URL(fileURLWithPath: "/unused.mp4")))
   }
 
+  func testCancellationBeforeAssetRegistrationRejectsMetadataLoading() {
+    let cancellation = ExtractionCancellation()
+    cancellation.cancel()
+    let asset = AVURLAsset(url: URL(fileURLWithPath: "/unused.mp4"))
+    XCTAssertThrowsError(try cancellation.registerAsset(asset)) { error in
+      XCTAssertEqual((error as? PigeonError)?.code, "cancelled")
+    }
+  }
+
+  func testCancellationAbortsRegisteredAssetLoading() throws {
+    let cancellation = ExtractionCancellation()
+    let asset = CancellationAsset(url: URL(fileURLWithPath: "/unused.mp4"))
+    try cancellation.registerAsset(asset)
+    cancellation.cancel()
+    XCTAssertTrue(asset.didCancelLoading)
+  }
+
+  func testCancellationDuringMetadataLoadingRejectsLateGenerator() {
+    let cancellation = ExtractionCancellation()
+    // Metadata loading suspends before a generator exists. Cancellation must
+    // survive that interval instead of disappearing from a generators map.
+    cancellation.cancel()
+    XCTAssertThrowsError(try cancellation.register(generator())) { error in
+      XCTAssertEqual((error as? PigeonError)?.code, "cancelled")
+    }
+  }
+
+  func testCancellationAfterGeneratorRegistrationPreventsEncoding() throws {
+    let cancellation = ExtractionCancellation()
+    try cancellation.register(generator())
+    cancellation.cancel()
+    XCTAssertThrowsError(try cancellation.check()) { error in
+      XCTAssertEqual((error as? PigeonError)?.code, "cancelled")
+    }
+  }
+
+  func testUncancelledRequestCanRegisterAndEncode() throws {
+    let cancellation = ExtractionCancellation()
+    try cancellation.check()
+    try cancellation.register(generator())
+    try cancellation.check()
+  }
+}
+
+private final class CancellationAsset: AVURLAsset, @unchecked Sendable {
+  var didCancelLoading = false
+
+  override func cancelLoading() {
+    didCancelLoading = true
+    super.cancelLoading()
+  }
 }

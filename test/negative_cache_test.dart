@@ -30,6 +30,21 @@ void main() {
     expect(cache.length, 0);
   });
 
+  test('expires at the ttl boundary, including zero ttl', () {
+    var now = DateTime(2026, 1, 1);
+    final cache = NegativeCache(
+      ttl: const Duration(seconds: 60),
+      now: () => now,
+    );
+    cache.record('key', err);
+    now = now.add(const Duration(seconds: 60));
+    expect(cache.lookup('key'), isNull);
+
+    final disabled = NegativeCache(ttl: Duration.zero, now: () => now);
+    disabled.record('key', err);
+    expect(disabled.lookup('key'), isNull);
+  });
+
   test('unknown keys return null', () {
     final cache = NegativeCache(ttl: const Duration(seconds: 60));
     expect(cache.lookup('nope'), isNull);

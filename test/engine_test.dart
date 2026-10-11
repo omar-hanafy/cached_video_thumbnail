@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -61,6 +62,53 @@ void main() {
     expect(results.map((r) => r.filePath).toSet().length, 1);
     expect(engine.metrics.coalescedJoins, 4);
   });
+
+  test('request IDs are unique across engines sharing an extractor', () async {
+    final firstEngine = newEngine();
+    final secondEngine = ThumbnailEngine.forTesting(
+      extractor: extractor,
+      directory: Directory('${root.path}/second-cache'),
+    );
+    extractor.gated = true;
+    final first = firstEngine.getThumbnail(asset);
+    final second = secondEngine.getThumbnail(asset);
+    await extractor.waitForCalls(2);
+    expect(extractor.callCount, 2);
+    expect(extractor.calls.map((call) => call.requestId).toSet().length, 2);
+    extractor.release();
+    await Future.wait([first, second]);
+  });
+
+  test(
+    'a coalesced event cannot cancel the incoming joiner indirectly',
+    () async {
+      final engine = newEngine();
+      extractor.gated = true;
+      final first = engine.thumbnail(asset);
+      first.result.ignore();
+      await pumpEventQueue();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.coalesced) first.cancel();
+      };
+      final second = engine.getThumbnail(asset);
+      await pumpEventQueue();
+
+      expect(extractor.cancelled, isEmpty);
+      extractor.release();
+      expect((await second).width, 1);
+      await expectLater(
+        first.result,
+        throwsA(
+          isA<ThumbnailException>().having(
+            (error) => error.code,
+            'code',
+            ThumbnailErrorCode.cancelled,
+          ),
+        ),
+      );
+      expect(extractor.callCount, 1);
+    },
+  );
 
   test('different specs of one source extract separately', () async {
     final engine = newEngine();
@@ -131,6 +179,34 @@ void main() {
     expect(engine.metrics.cancellations, 1);
   });
 
+  test('native cancel failures remain best-effort and do not escape', () async {
+    final engine = newEngine();
+    extractor.gated = true;
+    extractor.cancelFailure = StateError('native cancel failed');
+    final committed = Completer<void>();
+    engine.onEvent = (event) {
+      if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+    };
+    final request = engine.thumbnail(asset);
+    await pumpEventQueue();
+    request.cancel();
+    await expectLater(
+      request.result,
+      throwsA(
+        isA<ThumbnailException>().having(
+          (error) => error.code,
+          'code',
+          ThumbnailErrorCode.cancelled,
+        ),
+      ),
+    );
+
+    extractor.release();
+    await committed.future;
+    expect((await engine.getThumbnail(asset)).wasCached, isTrue);
+    expect(extractor.cancelled, hasLength(1));
+  });
+
   test(
     'cancelling all joiners of an in-flight request calls extractor.cancel',
     () async {
@@ -192,6 +268,60 @@ void main() {
         .toList();
     expect(order[0], 'blocker.mp4');
     expect(order[1], 'v.mp4');
+  });
+
+  test('a visible joiner promotes its queued prefetch flight', () async {
+    final engine = newEngine(
+      config: const ThumbnailEngineConfig(maxConcurrentExtractions: 1),
+    );
+    extractor.gated = true;
+    final blocker = engine.getThumbnail(VideoSource.asset('blocker.mp4'));
+    await pumpEventQueue();
+
+    engine.prefetch(asset);
+    final normal = engine.getThumbnail(VideoSource.asset('normal.mp4'));
+    await pumpEventQueue();
+    final visible = engine.getThumbnail(
+      asset,
+      priority: ThumbnailPriority.visible,
+    );
+    await pumpEventQueue();
+
+    extractor.gated = false;
+    extractor.release();
+    await Future.wait([blocker, normal, visible]);
+    expect(extractor.calls.map((call) => call.source), [
+      VideoSource.asset('blocker.mp4'),
+      asset,
+      VideoSource.asset('normal.mp4'),
+    ]);
+    expect(extractor.callCount, 3, reason: 'the prefetch is coalesced');
+  });
+
+  test('priority bumps before request initialization are retained', () async {
+    final engine = newEngine(
+      config: const ThumbnailEngineConfig(maxConcurrentExtractions: 1),
+    );
+    extractor.gated = true;
+    final blocker = engine.getThumbnail(VideoSource.asset('blocker.mp4'));
+    await pumpEventQueue();
+
+    final request = engine.thumbnail(
+      asset,
+      priority: ThumbnailPriority.prefetch,
+    );
+    request.bumpPriority(ThumbnailPriority.visible);
+    final normal = engine.getThumbnail(VideoSource.asset('normal.mp4'));
+    await pumpEventQueue();
+
+    extractor.gated = false;
+    extractor.release();
+    await Future.wait([blocker, request.result, normal]);
+    expect(extractor.calls.map((call) => call.source), [
+      VideoSource.asset('blocker.mp4'),
+      asset,
+      VideoSource.asset('normal.mp4'),
+    ]);
   });
 
   test('failures are negative-cached within the ttl, then retried', () async {
@@ -257,6 +387,50 @@ void main() {
     expect(extractor.callCount, 2);
   });
 
+  test('failed extraction removes its partial output immediately', () async {
+    final engine = newEngine();
+    extractor.writeBeforeFailure = true;
+    extractor.failWith = const ThumbnailException(
+      ThumbnailErrorCode.encodingFailed,
+      'partial encode failed',
+    );
+    await expectLater(
+      engine.getThumbnail(asset),
+      throwsA(
+        isA<ThumbnailException>().having(
+          (error) => error.code,
+          'code',
+          ThumbnailErrorCode.encodingFailed,
+        ),
+      ),
+    );
+
+    expect(await Directory('${root.path}/cache').list().toList(), isEmpty);
+    expect(engine.metrics.failures[ThumbnailErrorCode.encodingFailed], 1);
+  });
+
+  test('a transient cache initialization failure can be retried', () async {
+    final cachePath = '${root.path}/cache';
+    await File(cachePath).writeAsString('temporary obstruction');
+    final engine = newEngine();
+    await expectLater(
+      engine.getThumbnail(asset),
+      throwsA(
+        isA<ThumbnailException>().having(
+          (error) => error.code,
+          'code',
+          ThumbnailErrorCode.io,
+        ),
+      ),
+    );
+    expect(extractor.callCount, 0);
+
+    await File(cachePath).delete();
+    final result = await engine.getThumbnail(asset);
+    expect(File(result.filePath).existsSync(), isTrue);
+    expect(extractor.callCount, 1);
+  });
+
   test('spec validation fails synchronously', () {
     final engine = newEngine();
     expect(
@@ -317,6 +491,22 @@ void main() {
     );
     expect(
       () => const ThumbnailEngineConfig(maxConcurrentExtractions: 9).validate(),
+      throwsArgumentError,
+    );
+  });
+
+  test('config and request validation reject negative durations', () {
+    const negative = Duration(microseconds: -1);
+    expect(
+      () => const ThumbnailEngineConfig(defaultTimeout: negative).validate(),
+      throwsArgumentError,
+    );
+    expect(
+      () => const ThumbnailEngineConfig(negativeCacheTtl: negative).validate(),
+      throwsArgumentError,
+    );
+    expect(
+      () => newEngine().thumbnail(asset, timeout: negative),
       throwsArgumentError,
     );
   });

@@ -1,3 +1,29 @@
+## 0.2.0
+
+- **Breaking:** requires Flutter 3.47.7 and Dart 3.13.5 or newer (Dart 3).
+  iOS 15 is now the minimum, matching Flutter's supported platforms.
+  The public thumbnail API is unchanged; upgrade the app's SDK and CI
+  toolchain before updating the dependency.
+- Fix Unicode source identities that could share a disk-cache key. Cache
+  schema v2 invalidates existing thumbnails and regenerates them on demand.
+- Keep native extraction within the configured concurrency limit after
+  cancellation or timeout, and preserve priority changes while requests
+  initialize or join queued work.
+- Fix automatic image cancellation when widgets leave the tree, and allow
+  failed image streams to retry without clearing Flutter's entire image cache.
+- Serialize disk-cache changes, clean failed extraction output, preserve
+  active writes during cache clearing, and allow cache initialization to retry
+  after an I/O failure. Reject negative timeouts and expire failures at the
+  configured TTL boundary.
+- Fix Swift Package Manager integration on iOS and include the plugin's
+  privacy manifest in SwiftPM builds. Preserve cancellation while iOS loads
+  video metadata.
+- Update Android build support to AGP 9.3.1, Gradle 9.7.0, and Kotlin
+  2.4.21, and refresh supported Dart dependencies and generated channels.
+- Fix error handling and disposal in the example benchmark and playground.
+- Add a `migrate-v0-1-to-v0-2` agent skill covering the SDK requirements,
+  cache regeneration, and cancellation behavior.
+
 ## 0.1.1
 
 No changes to the Dart/native runtime; this release adds repo-distributed

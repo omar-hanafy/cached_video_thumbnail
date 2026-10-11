@@ -60,6 +60,10 @@ class VideoThumbnailImage extends ImageProvider<VideoThumbnailImage> {
 
   final ThumbnailEngine? _engine;
 
+  // ImageCache.putIfAbsent registers listeners synchronously. A depth counter
+  // also handles nested provider resolution without mutating provider identity.
+  static int _imageCacheRegistrationDepth = 0;
+
   /// The engine this provider resolves through.
   ThumbnailEngine get engine => _engine ?? ThumbnailEngine.instance;
 
@@ -69,13 +73,53 @@ class VideoThumbnailImage extends ImageProvider<VideoThumbnailImage> {
   }
 
   @override
+  void resolveStreamForKey(
+    ImageConfiguration configuration,
+    ImageStream stream,
+    VideoThumbnailImage key,
+    ImageErrorListener handleError,
+  ) {
+    final ImageStreamCompleter? completer;
+    _imageCacheRegistrationDepth++;
+    try {
+      completer = PaintingBinding.instance.imageCache.putIfAbsent(
+        key,
+        () =>
+            stream.completer ??
+            loadImage(
+              key,
+              PaintingBinding.instance.instantiateImageCodecWithSize,
+            ),
+        onError: handleError,
+      );
+    } finally {
+      _imageCacheRegistrationDepth--;
+    }
+    if (completer is _ThumbnailImageStreamCompleter) {
+      completer.finishCacheRegistration();
+    }
+    if (completer != null && stream.completer == null) {
+      stream.setCompleter(completer);
+    }
+  }
+
+  @override
   ImageStreamCompleter loadImage(
     VideoThumbnailImage key,
     ImageDecoderCallback decode,
   ) {
     final request = engine.thumbnail(source, spec: spec, priority: priority);
-    final completer = MultiFrameImageStreamCompleter(
-      codec: _decodeThumbnail(request, decode),
+    late _ThumbnailImageStreamCompleter completer;
+    completer = _ThumbnailImageStreamCompleter(
+      codec: _decodeThumbnail(
+        request,
+        decode,
+      ).whenComplete(() => completer.finishLoading()),
+      cancel: () {
+        PaintingBinding.instance.imageCache.evict(key);
+        request.cancel();
+      },
+      registeringCache: _imageCacheRegistrationDepth > 0,
       scale: 1.0,
       debugLabel: 'VideoThumbnailImage(${source.describe()})',
       informationCollector: () => [
@@ -83,7 +127,6 @@ class VideoThumbnailImage extends ImageProvider<VideoThumbnailImage> {
         DiagnosticsProperty<ThumbnailSpec>('spec', spec),
       ],
     );
-    completer.addOnLastListenerRemovedCallback(request.cancel);
     return completer;
   }
 
@@ -102,6 +145,7 @@ class VideoThumbnailImage extends ImageProvider<VideoThumbnailImage> {
           await ui.ImmutableBuffer.fromUint8List(_kTransparentPixel),
         );
       }
+      PaintingBinding.instance.imageCache.evict(this);
       rethrow;
     }
     try {
@@ -111,6 +155,7 @@ class VideoThumbnailImage extends ImageProvider<VideoThumbnailImage> {
       // The cached file is unreadable (purged by the OS or corrupted):
       // evict it so the next resolve regenerates, then surface the error.
       await engine.removeCorrupted(source, spec);
+      PaintingBinding.instance.imageCache.evict(this);
       rethrow;
     }
   }
@@ -127,4 +172,60 @@ class VideoThumbnailImage extends ImageProvider<VideoThumbnailImage> {
 
   @override
   String toString() => 'VideoThumbnailImage(${source.describe()}, $spec)';
+}
+
+/// The image cache adds its own pending-image listener. Count listeners added
+/// outside cache registration so a recycled widget can cancel unfinished work
+/// even while that cache listener is still attached.
+class _ThumbnailImageStreamCompleter extends MultiFrameImageStreamCompleter {
+  _ThumbnailImageStreamCompleter({
+    required super.codec,
+    required super.scale,
+    required this._cancel,
+    required this._registeringCache,
+    super.debugLabel,
+    super.informationCollector,
+  });
+
+  final void Function() _cancel;
+  final Map<ImageStreamListener, int> _externalListeners = {};
+  bool _registeringCache;
+  bool _loading = true;
+  bool _cancelled = false;
+
+  void finishCacheRegistration() => _registeringCache = false;
+
+  void finishLoading() => _loading = false;
+
+  @override
+  void addListener(ImageStreamListener listener) {
+    if (!_registeringCache) {
+      _externalListeners.update(
+        listener,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    super.addListener(listener);
+  }
+
+  @override
+  void removeListener(ImageStreamListener listener) {
+    final count = _externalListeners[listener];
+    if (count != null) {
+      if (count == 1) {
+        _externalListeners.remove(listener);
+      } else {
+        _externalListeners[listener] = count - 1;
+      }
+    }
+    super.removeListener(listener);
+    if (count != null &&
+        _externalListeners.isEmpty &&
+        _loading &&
+        !_cancelled) {
+      _cancelled = true;
+      _cancel();
+    }
+  }
 }

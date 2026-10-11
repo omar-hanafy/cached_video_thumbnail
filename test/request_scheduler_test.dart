@@ -141,42 +141,39 @@ void main() {
     expect(scheduler.existing('k'), isNull);
   });
 
-  test(
-    'cancelling a running job detaches it; a successful orphan result is reported',
-    () async {
-      final orphans = <(String, Object?)>[];
-      final scheduler = RequestScheduler(
-        maxConcurrent: 1,
-        onOrphanResult: (key, result) => orphans.add((key, result)),
-      );
-      final worker = ControlledWorker();
-      final job = scheduler.submit(
-        'k',
-        ThumbnailPriority.normal,
-        _long,
-        worker.call,
-      );
-      await pumpEventQueue();
-      expect(job.isRunning, isTrue);
+  test('cancelling a running job detaches it; a successful orphan result is reported', () async {
+    final orphans = <(String, Object?)>[];
+    final scheduler = RequestScheduler(
+      maxConcurrent: 1,
+      onOrphanResult: (key, result) => orphans.add((key, result)),
+    );
+    final worker = ControlledWorker();
+    final job = scheduler.submit(
+      'k',
+      ThumbnailPriority.normal,
+      _long,
+      worker.call,
+    );
+    await pumpEventQueue();
+    expect(job.isRunning, isTrue);
 
-      job.cancel();
-      await expectLater(
-        job.future,
-        throwsA(
-          isA<ThumbnailException>().having(
-            (e) => e.code,
-            'code',
-            ThumbnailErrorCode.cancelled,
-          ),
+    job.cancel();
+    await expectLater(
+      job.future,
+      throwsA(
+        isA<ThumbnailException>().having(
+          (e) => e.code,
+          'code',
+          ThumbnailErrorCode.cancelled,
         ),
-      );
-      expect(scheduler.existing('k'), isNull);
+      ),
+    );
+    expect(scheduler.existing('k'), isNull);
 
-      worker.finish('late-result');
-      await scheduler.drain();
-      expect(orphans, [('k', 'late-result')]);
-    },
-  );
+    worker.finish('late-result');
+    await scheduler.drain();
+    expect(orphans, [('k', 'late-result')]);
+  });
 
   test('a failed detached worker does not report an orphan result', () async {
     final orphans = <(String, Object?)>[];
@@ -199,6 +196,67 @@ void main() {
     await scheduler.drain();
     expect(orphans, isEmpty);
   });
+
+  for (final detachByTimeout in [false, true]) {
+    test(
+      '${detachByTimeout ? 'timing out' : 'cancelling'} a running worker keeps its slot until settlement',
+      () {
+        fakeAsync((async) {
+          final scheduler = RequestScheduler(maxConcurrent: 1);
+          final first = ControlledWorker();
+          final firstJob = scheduler.submit(
+            'first',
+            ThumbnailPriority.normal,
+            const Duration(seconds: 1),
+            first.call,
+          );
+          ThumbnailException? terminalError;
+          firstJob.future.then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stack) {
+              terminalError = error as ThumbnailException;
+            },
+          );
+          async.elapse(Duration.zero);
+          expect(first.started, isTrue);
+
+          final next = ControlledWorker();
+          final nextJob = scheduler.submit(
+            'next',
+            ThumbnailPriority.normal,
+            _long,
+            next.call,
+          );
+          if (detachByTimeout) {
+            async.elapse(const Duration(seconds: 1));
+          } else {
+            firstJob.cancel();
+            async.elapse(Duration.zero);
+          }
+
+          expect(
+            terminalError?.code,
+            detachByTimeout
+                ? ThumbnailErrorCode.timeout
+                : ThumbnailErrorCode.cancelled,
+          );
+          expect(scheduler.activeCount, 1);
+          expect(scheduler.queueDepth, 1);
+          expect(next.started, isFalse, reason: 'the first worker still runs');
+
+          first.finish('late');
+          async.elapse(Duration.zero);
+          expect(next.started, isTrue);
+          expect(scheduler.activeCount, 1);
+          expect(scheduler.queueDepth, 0);
+          next.finish('done');
+          async.elapse(Duration.zero);
+          expect(nextJob.isDone, isTrue);
+          expect(scheduler.activeCount, 0);
+        });
+      },
+    );
+  }
 
   test('bump raises a queued job to the front of the higher band', () async {
     final scheduler = RequestScheduler(maxConcurrent: 1);
@@ -294,39 +352,32 @@ void main() {
     expect(scheduler.existing('k'), isNull);
   });
 
-  test(
-    'ThumbnailException from workers propagates untouched; other errors are wrapped',
-    () async {
-      final scheduler = RequestScheduler(maxConcurrent: 2);
-      const original = ThumbnailException(ThumbnailErrorCode.network, '404');
-      final a = scheduler.submit(
-        'a',
-        ThumbnailPriority.normal,
-        _long,
-        () async => throw original,
-      );
-      await expectLater(a.future, throwsA(same(original)));
+  test('ThumbnailException from workers propagates untouched; other errors are wrapped', () async {
+    final scheduler = RequestScheduler(maxConcurrent: 2);
+    const original = ThumbnailException(ThumbnailErrorCode.network, '404');
+    final a = scheduler.submit(
+      'a',
+      ThumbnailPriority.normal,
+      _long,
+      () async => throw original,
+    );
+    await expectLater(a.future, throwsA(same(original)));
 
-      final b = scheduler.submit(
-        'b',
-        ThumbnailPriority.normal,
-        _long,
-        () async => throw StateError('x'),
-      );
-      await expectLater(
-        b.future,
-        throwsA(
-          isA<ThumbnailException>()
-              .having(
-                (e) => e.code,
-                'code',
-                ThumbnailErrorCode.extractionFailed,
-              )
-              .having((e) => e.cause, 'cause', isA<StateError>()),
-        ),
-      );
-    },
-  );
+    final b = scheduler.submit(
+      'b',
+      ThumbnailPriority.normal,
+      _long,
+      () async => throw StateError('x'),
+    );
+    await expectLater(
+      b.future,
+      throwsA(
+        isA<ThumbnailException>()
+            .having((e) => e.code, 'code', ThumbnailErrorCode.extractionFailed)
+            .having((e) => e.cause, 'cause', isA<StateError>()),
+      ),
+    );
+  });
 
   test('raising maxConcurrent dispatches queued work immediately', () async {
     final scheduler = RequestScheduler(maxConcurrent: 1);
