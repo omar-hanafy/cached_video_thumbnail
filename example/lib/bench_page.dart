@@ -7,7 +7,10 @@ import 'package:cached_video_thumbnail/cached_video_thumbnail.dart';
 /// extraction); warm runs replay the same requests against the cache. The
 /// difference is the engine's whole value proposition.
 class BenchPage extends StatefulWidget {
-  const BenchPage({super.key});
+  const BenchPage({super.key, this.engine});
+
+  /// Optional isolated engine for exercising the benchmark in tests.
+  final ThumbnailEngine? engine;
 
   @override
   State<BenchPage> createState() => _BenchPageState();
@@ -21,59 +24,72 @@ class _BenchPageState extends State<BenchPage> {
   String _report = 'No runs yet.';
 
   Future<void> _run({required bool cold}) async {
+    final count = _count;
+    final size = _size;
+    final concurrency = _concurrency;
     setState(() {
       _running = true;
-      _report = 'Running ${cold ? 'cold' : 'warm'} with $_count requests...';
+      _report = 'Running ${cold ? 'cold' : 'warm'} with $count requests...';
     });
-    final engine = ThumbnailEngine.instance;
-    await engine.configure(
-      ThumbnailEngineConfig(maxConcurrentExtractions: _concurrency),
-    );
-    if (cold) await engine.clearCache();
-
-    final before = engine.metrics;
-    final stopwatch = Stopwatch()..start();
-    final futures = <Future<Thumbnail>>[];
-    for (var i = 0; i < _count; i++) {
-      futures.add(
-        engine.getThumbnail(
-          VideoSource.asset(
-            i.isEven
-                ? 'assets/fixtures/landscape.mp4'
-                : 'assets/fixtures/portrait_rot90.mp4',
-          ),
-          // Distinct sizes force distinct cache keys so `count` is honest.
-          spec: ThumbnailSpec(maxWidth: _size + i, maxHeight: _size + i),
-        ),
+    try {
+      final engine = widget.engine ?? ThumbnailEngine.instance;
+      await engine.configure(
+        ThumbnailEngineConfig(maxConcurrentExtractions: concurrency),
       );
-    }
-    var failures = 0;
-    for (final f in futures) {
-      try {
-        await f;
-      } on ThumbnailException {
-        failures++;
-      }
-    }
-    stopwatch.stop();
-    final after = engine.metrics;
+      if (cold) await engine.clearCache();
 
-    final hits = after.cacheHits - before.cacheHits;
-    final extractions = after.extractions - before.extractions;
-    setState(() {
-      _running = false;
-      _report = [
-        '${cold ? 'COLD' : 'WARM'} run: $_count requests, '
-            'size $_size, concurrency $_concurrency',
-        'total: ${stopwatch.elapsedMilliseconds} ms '
-            '(${(stopwatch.elapsedMilliseconds / _count).toStringAsFixed(1)} ms/thumb)',
-        'cache hits: $hits, extractions: $extractions, failures: $failures',
-        'extract p50: ${after.extractP50?.inMilliseconds} ms, '
-            'p95: ${after.extractP95?.inMilliseconds} ms',
-        'queue wait p50: ${after.queueWaitP50?.inMilliseconds} ms, '
-            'p95: ${after.queueWaitP95?.inMilliseconds} ms',
-      ].join('\n');
-    });
+      final before = engine.metrics;
+      final stopwatch = Stopwatch()..start();
+      final futures = <Future<void>>[];
+      var failures = 0;
+      for (var i = 0; i < count; i++) {
+        futures.add(
+          engine
+              .getThumbnail(
+                VideoSource.asset(
+                  i.isEven
+                      ? 'assets/fixtures/landscape.mp4'
+                      : 'assets/fixtures/portrait_rot90.mp4',
+                ),
+                // Distinct sizes force distinct cache keys so `count` is honest.
+                spec: ThumbnailSpec(maxWidth: size + i, maxHeight: size + i),
+              )
+              .then<void>(
+                (_) {},
+                onError: (Object error, StackTrace stack) {
+                  if (error is! ThumbnailException) {
+                    Error.throwWithStackTrace(error, stack);
+                  }
+                  failures++;
+                },
+              ),
+        );
+      }
+      await Future.wait(futures);
+      stopwatch.stop();
+      final after = engine.metrics;
+
+      final hits = after.cacheHits - before.cacheHits;
+      final extractions = after.extractions - before.extractions;
+      if (!mounted) return;
+      setState(() {
+        _report = [
+          '${cold ? 'COLD' : 'WARM'} run: $count requests, '
+              'size $size, concurrency $concurrency',
+          'total: ${stopwatch.elapsedMilliseconds} ms '
+              '(${(stopwatch.elapsedMilliseconds / count).toStringAsFixed(1)} ms/thumb)',
+          'cache hits: $hits, extractions: $extractions, failures: $failures',
+          'extract p50: ${after.extractP50?.inMilliseconds} ms, '
+              'p95: ${after.extractP95?.inMilliseconds} ms',
+          'queue wait p50: ${after.queueWaitP50?.inMilliseconds} ms, '
+              'p95: ${after.queueWaitP95?.inMilliseconds} ms',
+        ].join('\n');
+      });
+    } catch (error) {
+      if (mounted) setState(() => _report = 'Benchmark failed: $error');
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
   }
 
   @override
@@ -85,19 +101,19 @@ class _BenchPageState extends State<BenchPage> {
           label: 'Requests',
           options: const [12, 24, 48, 96],
           value: _count,
-          onChanged: (v) => setState(() => _count = v),
+          onChanged: _running ? null : (v) => setState(() => _count = v),
         ),
         _IntSelector(
           label: 'Box size (px)',
           options: const [160, 320, 480],
           value: _size,
-          onChanged: (v) => setState(() => _size = v),
+          onChanged: _running ? null : (v) => setState(() => _size = v),
         ),
         _IntSelector(
           label: 'Concurrency',
           options: const [1, 2, 4],
           value: _concurrency,
-          onChanged: (v) => setState(() => _concurrency = v),
+          onChanged: _running ? null : (v) => setState(() => _concurrency = v),
         ),
         const SizedBox(height: 16),
         Row(
@@ -156,6 +172,7 @@ class _BenchPageState extends State<BenchPage> {
                       maxWidth: 200 + (index % 40),
                       maxHeight: 280,
                     ),
+                    engine: widget.engine,
                   ),
                   errorBuilder: (_, _, _) =>
                       const ColoredBox(color: Colors.black12),
@@ -180,7 +197,7 @@ class _IntSelector extends StatelessWidget {
   final String label;
   final List<int> options;
   final int value;
-  final ValueChanged<int> onChanged;
+  final ValueChanged<int>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -196,7 +213,9 @@ class _IntSelector extends StatelessWidget {
                   ButtonSegment(value: option, label: Text('$option')),
               ],
               selected: {value},
-              onSelectionChanged: (selection) => onChanged(selection.first),
+              onSelectionChanged: onChanged == null
+                  ? null
+                  : (selection) => onChanged!(selection.first),
             ),
           ),
         ],

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cached_video_thumbnail/cached_video_thumbnail.dart';
 
@@ -84,6 +84,10 @@ void main() {
     'removing the last listener before completion cancels the request',
     () async {
       extractor.gated = true;
+      final committed = Completer<void>();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+      };
       final provider = VideoThumbnailImage(asset, engine: engine);
       // Drive loadImage directly so the ImageCache's pending-image listener
       // does not keep the stream alive.
@@ -93,11 +97,10 @@ void main() {
       );
       final listener = ImageStreamListener((_, _) {});
       completer.addListener(listener);
-      await pumpEventQueue();
+      await extractor.waitForCalls(1);
       expect(extractor.callCount, 1);
 
       completer.removeListener(listener);
-      await pumpEventQueue();
       expect(
         extractor.cancelled,
         isNotEmpty,
@@ -105,7 +108,7 @@ void main() {
       );
 
       extractor.release();
-      await pumpEventQueue();
+      await committed.future;
       expect(engine.metrics.cancellations, 1);
     },
   );
@@ -118,11 +121,144 @@ void main() {
     expect(extractor.callCount, 1);
 
     // The corrupted entry was evicted: a retry extracts again and succeeds.
-    PaintingBinding.instance.imageCache.clear();
-    PaintingBinding.instance.imageCache.clearLiveImages();
     extractor.bytes = kTinyPng;
     final info = await resolveInfo(VideoThumbnailImage(asset, engine: engine));
     expect(info.image.width, 1);
     expect(extractor.callCount, 2);
+  });
+
+  test(
+    'resolve cancels when the last consumer leaves a pending image',
+    () async {
+      extractor.gated = true;
+      final committed = Completer<void>();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+      };
+      final provider = VideoThumbnailImage(asset, engine: engine);
+      final stream = provider.resolve(ImageConfiguration.empty);
+      final listener = ImageStreamListener((info, _) => info.dispose());
+      stream.addListener(listener);
+      await extractor.waitForCalls(1);
+      expect(extractor.callCount, 1);
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(provider).pending,
+        isTrue,
+      );
+
+      stream.removeListener(listener);
+      expect(extractor.cancelled, hasLength(1));
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(provider).pending,
+        isFalse,
+      );
+
+      extractor.release();
+      await committed.future;
+      expect(engine.metrics.cancellations, 1);
+    },
+  );
+
+  test(
+    'a shared pending image survives until its last consumer leaves',
+    () async {
+      extractor.gated = true;
+      final committed = Completer<void>();
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) committed.complete();
+      };
+      final a = VideoThumbnailImage(asset, engine: engine);
+      final b = VideoThumbnailImage(asset, engine: engine);
+      final first = a.resolve(ImageConfiguration.empty);
+      final second = b.resolve(ImageConfiguration.empty);
+      final firstListener = ImageStreamListener((info, _) => info.dispose());
+      final secondListener = ImageStreamListener((info, _) => info.dispose());
+      first.addListener(firstListener);
+      second.addListener(secondListener);
+      await extractor.waitForCalls(1);
+      expect(extractor.callCount, 1);
+
+      first.removeListener(firstListener);
+      expect(extractor.cancelled, isEmpty);
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(a).pending,
+        isTrue,
+      );
+
+      second.removeListener(secondListener);
+      expect(extractor.cancelled, hasLength(1));
+      extractor.release();
+      await committed.future;
+    },
+  );
+
+  test(
+    'extraction failures do not leave a failed Flutter cache entry',
+    () async {
+      await engine.configure(
+        const ThumbnailEngineConfig(negativeCacheTtl: Duration.zero),
+      );
+      extractor.failWith = const ThumbnailException(
+        ThumbnailErrorCode.extractionFailed,
+        'Unavailable frame',
+      );
+      final provider = VideoThumbnailImage(asset, engine: engine);
+      await expectLater(
+        resolveInfo(provider),
+        throwsA(isA<ThumbnailException>()),
+      );
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(provider).pending,
+        isFalse,
+      );
+
+      extractor.failWith = null;
+      final info = await resolveInfo(
+        VideoThumbnailImage(asset, engine: engine),
+      );
+      expect(info.image.width, 1);
+      info.dispose();
+      expect(extractor.callCount, 2);
+    },
+  );
+
+  testWidgets('disposing an Image widget cancels its pending thumbnail', (
+    tester,
+  ) async {
+    late Completer<void> settled;
+    late VideoThumbnailImage provider;
+    late ImageStream pendingStream;
+    final bootstrapListener = ImageStreamListener((info, _) => info.dispose());
+    // Start filesystem work in the real async zone, then let the widget adopt
+    // that same pending stream. Its removal must cancel the sole consumer.
+    await tester.runAsync(() async {
+      settled = Completer<void>();
+      extractor = FakeExtractor()..gated = true;
+      engine = ThumbnailEngine.forTesting(
+        extractor: extractor,
+        directory: Directory('${root.path}/widget-cache'),
+      );
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) settled.complete();
+      };
+      provider = VideoThumbnailImage(asset, engine: engine);
+      pendingStream = provider.resolve(ImageConfiguration.empty);
+      pendingStream.addListener(bootstrapListener);
+      await extractor.waitForCalls(1);
+    });
+    await tester.pumpWidget(
+      SizedBox(width: 20, height: 20, child: Image(image: provider)),
+    );
+    pendingStream.removeListener(bootstrapListener);
+    expect(extractor.callCount, 1);
+    expect(extractor.cancelled, isEmpty);
+
+    await tester.pumpWidget(const SizedBox());
+    expect(extractor.cancelled, hasLength(1));
+    await tester.runAsync(() async {
+      extractor.release();
+      await settled.future;
+    });
+    expect(tester.takeException(), isNull);
   });
 }

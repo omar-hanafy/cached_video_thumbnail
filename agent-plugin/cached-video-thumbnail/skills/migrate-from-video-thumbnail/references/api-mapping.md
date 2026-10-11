@@ -44,7 +44,7 @@ FcNativeVideoThumbnail().getVideoThumbnail({srcFile, destFile, width,
 | Old | New | Notes |
 |---|---|---|
 | `srcFile:` (local path only) | `VideoSource.file(path)` | Network/asset sources are new capabilities here |
-| `srcFileUri:` (Android content URI) | **No equivalent in 0.1.x** | `content://` is documented as not yet supported - keep such call sites on the old package or resolve the URI to a file first |
+| `srcFileUri:` (Android content URI) | **No equivalent in 0.2.x** | `content://` is documented as not yet supported - keep such call sites on the old package or resolve the URI to a file first |
 | `destFile:` | none | Engine-owned cache file; copy out if needed |
 | `width:`/`height:` (required) | spec `maxWidth`/`maxHeight` | fc treats them similarly as a bounding box with `keepAspectRatio: true`; aspect is now always preserved (no stretch mode) |
 | `format: 'jpeg'/'png'` | `ThumbnailFormat.jpeg/png` | fc's Android ignored the format and always wrote JPEG; the new engine honors it on both platforms - PNG call sites will now actually produce PNG |

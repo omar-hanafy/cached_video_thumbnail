@@ -133,8 +133,11 @@ class _PlaygroundPageState extends State<PlaygroundPage> {
     final file = File('${dir.path}/playground_landscape.mp4');
     if (!file.existsSync()) {
       final data = await rootBundle.load(landscapeAsset);
-      await file.writeAsBytes(data.buffer.asUint8List());
+      await file.writeAsBytes(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      );
     }
+    if (!mounted) return;
     _fileController.text = file.path;
     _toast('Fixture copied to ${file.path}');
   }

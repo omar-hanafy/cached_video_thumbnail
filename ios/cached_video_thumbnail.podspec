@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'cached_video_thumbnail'
-  s.version          = '0.1.0'
+  s.version          = '0.2.0'
   s.summary          = 'High-performance video thumbnail engine for Flutter.'
   s.description      = <<-DESC
 Cached, scheduled, cancellable video thumbnail generation from asset, file,
@@ -16,7 +16,7 @@ and network videos, built for infinite feeds on low-end devices.
   s.source           = { :path => '.' }
   s.source_files = 'cached_video_thumbnail/Sources/cached_video_thumbnail/**/*.swift'
   s.dependency 'Flutter'
-  s.platform = :ios, '13.0'
+  s.platform = :ios, '15.0'
 
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
   s.swift_version = '5.0'

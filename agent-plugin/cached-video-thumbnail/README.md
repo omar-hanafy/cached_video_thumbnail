@@ -34,6 +34,7 @@ Start a new session after installing so the skills are discovered.
 | `diagnose-thumbnail-issues` | skill | ThumbnailException errors, instant re-failures, cache misses, jank triage, platform quirks |
 | `mock-thumbnail-engine` | skill | Writing hermetic tests for app code that uses the package |
 | `migrate-from-video-thumbnail` | skill | Replacing video_thumbnail, flutter_video_thumbnail_plus, get_thumbnail_video, or fc_native_video_thumbnail |
+| `migrate-v0-1-to-v0-2` | skill | Upgrading 0.1.x consumers to the new SDK minimums and cache schema |
 | `thumbnail-integration-auditor` | agent (Claude Code only) | Read-only whole-codebase audit of an existing integration |
 
 Skills follow the Agent Skills format (`skills/<name>/SKILL.md`) and are
@@ -47,7 +48,7 @@ bundled agent is read-only by declared tool policy.
 ## Compatibility
 
 Plugin version tracks the package version (validated in CI). Skill content
-targets `cached_video_thumbnail` 0.1.x; when the package's public API
+targets `cached_video_thumbnail` 0.2.x; when the package's public API
 changes, skills are updated in the same release.
 
 ## Maintainers

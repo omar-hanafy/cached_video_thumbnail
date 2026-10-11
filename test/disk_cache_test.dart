@@ -57,9 +57,8 @@ void main() {
       await a.init();
       final key = await keyFor('v.mp4');
       await a.commit(key, await fakeExtract(a, key), width: 32, height: 18);
-      File(
-        '${root.path}/cache/orphan.1234abcd.part',
-      ).writeAsBytesSync(List.filled(10, 9));
+      File('${root.path}/cache/orphan.1234abcd.part')
+          .writeAsBytesSync(List.filled(10, 9));
 
       final b = newCache();
       await b.init();
@@ -313,5 +312,62 @@ void main() {
     expect(cache.lookup(key), isNull);
     expect(File(path).existsSync(), isFalse);
     expect(cache.totalBytes, 0);
+  });
+
+  test(
+    'concurrent replacement commits keep bytes and files consistent',
+    () async {
+      final cache = newCache();
+      await cache.init();
+      final key = await keyFor('v.mp4');
+      await cache.commit(
+        key,
+        await fakeExtract(cache, key, size: 100),
+        width: 32,
+        height: 18,
+      );
+      final firstTemp = await fakeExtract(cache, key, size: 200);
+      final secondTemp = await fakeExtract(cache, key, size: 300);
+      final paths = await Future.wait([
+        cache.commit(key, firstTemp, width: 64, height: 36),
+        cache.commit(key, secondTemp, width: 96, height: 54),
+      ]);
+
+      final hit = cache.lookup(key)!;
+      expect(cache.entryCount, 1);
+      expect(cache.totalBytes, await File(hit.path).length());
+      expect(
+        await cache.directory.list().where((entity) => entity is File).length,
+        1,
+      );
+      expect(File(paths.first).existsSync(), isFalse);
+      expect(hit.path, paths.last);
+    },
+  );
+
+  test('clear preserves temporary outputs of active extractions', () async {
+    final cache = newCache();
+    await cache.init();
+    final committedKey = await keyFor('done.mp4');
+    await cache.commit(
+      committedKey,
+      await fakeExtract(cache, committedKey),
+      width: 32,
+      height: 18,
+    );
+    final activeKey = await keyFor('active.mp4');
+    final activeTemp = await fakeExtract(cache, activeKey);
+    await cache.clear();
+
+    expect(cache.entryCount, 0);
+    expect(cache.totalBytes, 0);
+    expect(File(activeTemp).existsSync(), isTrue);
+    final path = await cache.commit(
+      activeKey,
+      activeTemp,
+      width: 32,
+      height: 18,
+    );
+    expect(File(path).existsSync(), isTrue);
   });
 }

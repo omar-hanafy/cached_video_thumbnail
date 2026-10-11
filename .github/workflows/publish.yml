@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'cached_video_thumbnail-v*'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,5 +11,6 @@ permissions:
 jobs:
   publish:
     permissions:
+      contents: read
       id-token: write
     uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1

@@ -3,6 +3,50 @@ import Flutter
 import Foundation
 import ImageIO
 
+/// Retains cancellation even while the request is still loading metadata.
+final class ExtractionCancellation {
+  private let lock = NSLock()
+  private var cancelled = false
+  private var asset: AVURLAsset?
+  private var generator: AVAssetImageGenerator?
+
+  func cancel() {
+    lock.lock()
+    cancelled = true
+    let asset = asset
+    let generator = generator
+    lock.unlock()
+    asset?.cancelLoading()
+    generator?.cancelAllCGImageGeneration()
+  }
+
+  func registerAsset(_ asset: AVURLAsset) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try checkLocked()
+    self.asset = asset
+  }
+
+  func register(_ generator: AVAssetImageGenerator) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try checkLocked()
+    self.generator = generator
+  }
+
+  func check() throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try checkLocked()
+  }
+
+  private func checkLocked() throws {
+    if cancelled {
+      throw PigeonError(code: "cancelled", message: "generation cancelled", details: nil)
+    }
+  }
+}
+
 /// Stateless single-frame extractor built on AVAssetImageGenerator.
 ///
 /// Performance rules (see the package design doc):
@@ -16,50 +60,60 @@ import ImageIO
 ///   can abort exactly one request's generation.
 final class Extractor {
   private let lock = NSLock()
-  private var generators: [String: AVAssetImageGenerator] = [:]
+  private var cancellations: [String: ExtractionCancellation] = [:]
 
   func extract(
     request: ExtractRequest,
     completion: @escaping (Result<ExtractResult, Error>) -> Void
   ) {
+    let cancellation = ExtractionCancellation()
+    lock.lock()
+    cancellations[request.requestId] = cancellation
+    lock.unlock()
     Task.detached(priority: .utility) {
       let result: Result<ExtractResult, Error>
       do {
-        result = .success(try await self.performExtract(request))
+        result = .success(try await self.performExtract(request, cancellation: cancellation))
       } catch let error as PigeonError {
         result = .failure(error)
       } catch {
-        result = .failure(Self.classify(error))
+        do {
+          // Asset loading can wrap cancellation in a network error. The
+          // request's cancellation state is authoritative in that case.
+          try cancellation.check()
+          result = .failure(Self.classify(error))
+        } catch {
+          result = .failure(error)
+        }
       }
-      self.removeGenerator(request.requestId)
+      self.removeCancellation(request.requestId)
       DispatchQueue.main.async { completion(result) }
     }
   }
 
   func cancel(requestId: String) {
     lock.lock()
-    let generator = generators.removeValue(forKey: requestId)
+    let cancellation = cancellations[requestId]
     lock.unlock()
-    generator?.cancelAllCGImageGeneration()
+    cancellation?.cancel()
   }
 
-  private func registerGenerator(_ generator: AVAssetImageGenerator, for requestId: String) {
+  private func removeCancellation(_ requestId: String) {
     lock.lock()
-    generators[requestId] = generator
-    lock.unlock()
-  }
-
-  private func removeGenerator(_ requestId: String) {
-    lock.lock()
-    generators.removeValue(forKey: requestId)
+    cancellations.removeValue(forKey: requestId)
     lock.unlock()
   }
 
   // MARK: - Pipeline
 
-  private func performExtract(_ request: ExtractRequest) async throws -> ExtractResult {
+  private func performExtract(
+    _ request: ExtractRequest, cancellation: ExtractionCancellation
+  ) async throws -> ExtractResult {
+    try cancellation.check()
     let asset = try resolveAsset(request)
+    try cancellation.registerAsset(asset)
     let (track, durationMs) = try await loadVideoTrack(of: asset)
+    try cancellation.check()
 
     let generator = AVAssetImageGenerator(asset: asset)
     generator.appliesPreferredTrackTransform = true
@@ -78,8 +132,9 @@ final class Extractor {
     if durationMs > 0 { positionMs = min(positionMs, durationMs) }
     let time = CMTime(value: CMTimeValue(positionMs), timescale: 1000)
 
-    registerGenerator(generator, for: request.requestId)
+    try cancellation.register(generator)
     let image = try await generateImage(generator, at: time)
+    try cancellation.check()
     try encode(image, request: request)
     return ExtractResult(width: Int64(image.width), height: Int64(image.height))
   }
@@ -122,28 +177,8 @@ final class Extractor {
   }
 
   private func loadVideoTrack(of asset: AVURLAsset) async throws -> (AVAssetTrack, Int64) {
-    let tracks: [AVAssetTrack]
-    let duration: CMTime
-    if #available(iOS 15.0, *) {
-      tracks = try await asset.loadTracks(withMediaType: .video)
-      duration = try await asset.load(.duration)
-    } else {
-      try await withCheckedThrowingContinuation {
-        (continuation: CheckedContinuation<Void, Error>) in
-        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
-          var error: NSError?
-          if asset.statusOfValue(forKey: "tracks", error: &error) == .loaded {
-            continuation.resume()
-          } else {
-            continuation.resume(
-              throwing: error
-                ?? NSError(domain: AVFoundationErrorDomain, code: -1, userInfo: nil))
-          }
-        }
-      }
-      tracks = asset.tracks(withMediaType: .video)
-      duration = asset.duration
-    }
+    let tracks = try await asset.loadTracks(withMediaType: .video)
+    let duration = try await asset.load(.duration)
     guard let track = tracks.first else {
       throw PigeonError(
         code: "unsupportedMedia", message: "media has no video track", details: nil)
@@ -157,15 +192,8 @@ final class Extractor {
   /// or nil when unconstrained or the source is already small enough.
   private func fitBox(for track: AVAssetTrack, request: ExtractRequest) async throws -> CGSize? {
     if request.maxWidth <= 0 && request.maxHeight <= 0 { return nil }
-    let naturalSize: CGSize
-    let transform: CGAffineTransform
-    if #available(iOS 15.0, *) {
-      naturalSize = try await track.load(.naturalSize)
-      transform = try await track.load(.preferredTransform)
-    } else {
-      naturalSize = track.naturalSize
-      transform = track.preferredTransform
-    }
+    let naturalSize = try await track.load(.naturalSize)
+    let transform = try await track.load(.preferredTransform)
     let display = naturalSize.applying(transform)
     let width = abs(display.width)
     let height = abs(display.height)
@@ -207,7 +235,8 @@ final class Extractor {
   }
 
   private func encode(_ image: CGImage, request: ExtractRequest) throws {
-    let uti: CFString = request.format == "png" ? "public.png" as CFString : "public.jpeg" as CFString
+    let uti: CFString =
+      request.format == "png" ? "public.png" as CFString : "public.jpeg" as CFString
     let url = URL(fileURLWithPath: request.destPath) as CFURL
     guard let destination = CGImageDestinationCreateWithURL(url, uti, 1, nil) else {
       throw PigeonError(
@@ -234,11 +263,7 @@ final class Extractor {
         code: "network", message: nsError.localizedDescription, details: nil)
     }
     if nsError.domain == AVFoundationErrorDomain {
-      // Below iOS 16 cancellation surfaces through the .cancelled result
-      // code path instead, so gating this symbol on iOS 15 loses nothing.
-      if #available(iOS 15.0, *),
-        nsError.code == AVError.Code.operationCancelled.rawValue
-      {
+      if nsError.code == AVError.Code.operationCancelled.rawValue {
         return PigeonError(
           code: "cancelled", message: "generation cancelled", details: nil)
       }

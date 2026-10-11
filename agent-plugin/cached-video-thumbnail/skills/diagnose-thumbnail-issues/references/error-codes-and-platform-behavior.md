@@ -79,7 +79,7 @@ caller in `metrics.cancellations`). Seeing many is normal during flings.
 
 Both platforms: encode straight to the destination file (no byte arrays
 over the platform channel), position clamped into `[0, duration]`, minSdk
-24 / iOS 13.
+24 / iOS 15.
 
 ## Cache layers (who cached what)
 
@@ -89,7 +89,7 @@ over the platform channel), position clamped into `[0, duration]`, minSdk
    `PaintingBinding.instance.imageCache` eviction or use a new source.
 2. **Engine in-memory index over the disk cache**: keyed by canonical
    (source, spec) key; hits cost no channel/disk/decode.
-3. **Disk files** `<app cache>/thumbnail/v1/`: atomic writes, LRU to 90%
+3. **Disk files** `<app cache>/thumbnail/v2/`: atomic writes, LRU to 90%
    of `maxCacheBytes`/`maxCacheEntries`, OS-purgeable.
 4. **Negative cache** (in-memory): failure memos for `negativeCacheTtl`.
 

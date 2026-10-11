@@ -91,12 +91,10 @@ class RequestScheduler {
 
   /// Completes when no work is queued or running. Test helper.
   Future<void> drain() async {
-    while (queueDepth > 0 || _active > 0 || _detachedRunning > 0) {
+    while (queueDepth > 0 || _active > 0) {
       await Future<void>.delayed(Duration.zero);
     }
   }
-
-  int _detachedRunning = 0;
 
   List<_Job<Object?>> _bandOf(ThumbnailPriority priority) => switch (priority) {
     ThumbnailPriority.visible => _visible,
@@ -132,14 +130,13 @@ class RequestScheduler {
       });
     }
 
-    Future<Object?>(() => job.worker()).then(
+    Future<Object?>.sync(() => job.worker()).then(
       (result) {
         timeoutTimer?.cancel();
+        _finish(job);
         if (job._detached) {
-          _detachedRunning--;
           onOrphanResult?.call(job.key, result);
         } else {
-          _finish(job);
           job._complete(result);
         }
         _pump();
@@ -153,13 +150,11 @@ class RequestScheduler {
                 'worker failed: $error',
                 cause: error,
               );
-        if (job._detached) {
-          _detachedRunning--;
-          // Late failures of detached workers are dropped by design.
-        } else {
-          _finish(job);
+        _finish(job);
+        if (!job._detached) {
           job._completeError(wrapped, stack);
         }
+        // Late failures of detached workers are dropped by design.
         _pump();
       },
     );
@@ -168,22 +163,19 @@ class RequestScheduler {
   void _finish(_Job<Object?> job) {
     _active--;
     job._state = _JobState.done;
-    _byKey.remove(job.key);
+    if (identical(_byKey[job.key], job)) _byKey.remove(job.key);
   }
 
   void _onCancelQueued(_Job<Object?> job) {
     _bandOf(job.priority).remove(job);
-    _byKey.remove(job.key);
+    if (identical(_byKey[job.key], job)) _byKey.remove(job.key);
     scheduleMicrotask(_pump);
   }
 
   void _onDetachRunning(_Job<Object?> job) {
     // The slot stays occupied until the worker settles, but the job is no
     // longer joinable.
-    _active--;
-    _detachedRunning++;
-    _byKey.remove(job.key);
-    scheduleMicrotask(_pump);
+    if (identical(_byKey[job.key], job)) _byKey.remove(job.key);
   }
 }
 

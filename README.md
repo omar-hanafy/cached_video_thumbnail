@@ -43,7 +43,7 @@ in Claude Code, `$integrate-feed-thumbnails` in Codex. Trust note: the
 plugin is instructions and reference files only - no hooks, no MCP
 servers, no executable scripts, no network access; the bundled Claude
 agent is read-only. The plugin version tracks the package version, and its
-skills target 0.1.x. Update with `claude plugin update` /
+skills target 0.2.x. Update with `claude plugin update` /
 `codex plugin marketplace upgrade`; remove with `claude plugin uninstall` /
 `codex plugin remove`. Details, capabilities, and troubleshooting:
 [doc/ai/README.md](https://github.com/omar-hanafy/cached_video_thumbnail/blob/main/doc/ai/README.md).
@@ -76,6 +76,11 @@ fit box, and per-request cancellation. No FFmpeg, no extra native
 dependencies.
 
 ## Quickstart
+
+Requires Flutter **3.47.7+**, Dart **3.13.5+** (Dart 3), Android **24+**, and
+iOS **15+**. Version 0.2.0
+keeps the public thumbnail API unchanged. Its corrected Unicode cache keys
+invalidate the old disk cache; thumbnails regenerate on demand.
 
 ```dart
 import 'package:cached_video_thumbnail/cached_video_thumbnail.dart';
@@ -154,8 +159,15 @@ the user is looking at now beat the ones from two flings ago. Identical
 in-flight requests share one extraction; cancelling one joiner never affects
 the others.
 
+Cancellation and timeouts settle the caller's request promptly. Native work
+that cannot stop immediately keeps its scheduler slot until it finishes, so
+the configured concurrency limit still applies.
+
 `VideoThumbnailImage` wires cancellation automatically: when the last
 listener detaches before completion, the request is cancelled.
+Use `ThumbnailSpec` for thumbnail sizing. Wrapping the provider in Flutter's
+`ResizeImage` bypasses its resolver and automatic cancellation tracking;
+native extraction still obeys the engine's concurrency limit.
 
 ## Configuration
 
@@ -175,14 +187,15 @@ applies live.
 
 ## Cache behavior
 
-- Location: the app cache directory (`<cache>/thumbnail/v1/`). The OS may
+- Location: the app cache directory (`<cache>/thumbnail/v2/`). The OS may
   purge it; the engine re-extracts on demand.
 - Hits are answered from an in-memory index: no platform channel, no disk
   stat, and no decoding (entry dimensions are stored in the file name).
 - Writes are atomic (temp file + rename); crash leftovers are swept on init.
 - LRU eviction targets 90% of the caps and runs off the request path.
 - `evict(source)` removes every spec and content version of one source;
-  `clearCache()` removes everything.
+  `clearCache()` removes committed entries. Active extractions keep their
+  temporary output and may refill the cache when they finish.
 
 ## Errors
 
@@ -240,7 +253,7 @@ The example app ships a benchmark page (cold vs warm runs, percentiles, a
   retriever retries internally without surfacing the status code, so the
   engine's deadline is what ends the attempt (bounded and negative-cached
   either way).
-- iOS: deployment target 13.0. Uses the async generator API on iOS 16+, with
+- iOS: deployment target 15.0. Uses the async generator API on iOS 16+, with
   a continuation fallback below. Network headers use the de-facto
   `AVURLAssetHTTPHeaderFieldsKey` option.
 

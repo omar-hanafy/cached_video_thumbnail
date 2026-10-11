@@ -14,36 +14,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Flutter (stable)
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
 
-      - name: Version channel check
-        if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'dev')
+      - name: Validate release lane
+        env:
+          TARGET_LANE: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
+        shell: bash
         run: |
           set -euo pipefail
-          base_sha="${{ github.event.pull_request.base.sha }}"
-          head_sha="${{ github.event.pull_request.head.sha }}"
-          if git diff --name-only "$base_sha" "$head_sha" | grep -q '^pubspec.yaml$'; then
-            version=$(awk '/^version:/ {print $2}' pubspec.yaml)
-            if [[ "${{ github.base_ref }}" == "main" ]]; then
-              if [[ "$version" == *-* ]]; then
-                echo "Main requires a stable version (no pre-release suffix)."
-                exit 1
-              fi
-            else
-              if [[ "$version" != *-* ]]; then
-                echo "Dev requires a pre-release version suffix (e.g. -dev.1)."
-                exit 1
-              fi
-            fi
-          else
-            echo "pubspec.yaml not changed; skipping version channel check."
+          version=$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d "\"'")
+          stable_pattern='^[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.-]+)?$'
+          prerelease_pattern='^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+(\+[0-9A-Za-z.-]+)?$'
+          if [[ "$TARGET_LANE" == 'main' && ! "$version" =~ $stable_pattern ]]; then
+            echo "main requires a stable semantic version, got $version."
+            exit 1
+          fi
+          if [[ "$TARGET_LANE" == 'dev' && ! "$version" =~ $prerelease_pattern ]]; then
+            echo "dev requires a -dev.N prerelease version, got $version."
+            exit 1
           fi
 
       - name: Install dependencies
@@ -61,16 +56,70 @@ jobs:
       - name: Test
         run: flutter test
 
+      - name: Test example
+        working-directory: example
+        run: flutter test
+
+  test-minimum:
+    name: Test on minimum (Flutter 3.47.7)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Flutter (minimum)
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.7'
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+  test-lower-bounds:
+    name: Test dependency lower bounds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Flutter (minimum)
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.7'
+
+      - name: Install dependency lower bounds
+        run: dart pub downgrade
+
+      - name: Analyze
+        run: flutter analyze --no-pub
+
+      - name: Test
+        run: flutter test --no-pub
+
   test-beta:
     name: Test on beta
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Flutter (beta)
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: beta
 
@@ -83,15 +132,121 @@ jobs:
       - name: Test
         run: flutter test
 
+  test-android:
+    name: Android integration (API 36)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: example
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Java (AGP 9.3)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter (minimum)
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.7'
+
+      - name: Configure Flutter Java
+        run: flutter config --jdk-dir "$JAVA_HOME"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run hermetic integration tests
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          disable-linux-hw-accel: false
+          working-directory: example
+          script: bash ../.github/scripts/run-android-integration.sh
+
+  test-ios:
+    name: iOS integration and native tests
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: example
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Flutter (minimum)
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.7'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Boot iPhone simulator
+        id: simulator
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          device=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          print(next(d["udid"] for group in devices.values() for d in group
+                     if d["name"].startswith("iPhone") and d["isAvailable"]))
+          ')
+          echo "device=$device" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+
+      - name: Run Dart integration and native cancellation tests through XCTest
+        timeout-minutes: 15
+        env:
+          IOS_DEVICE: ${{ steps.simulator.outputs.device }}
+        run: bash ../.github/scripts/run-ios-integration.sh
+
+      - name: Capture iOS startup diagnostics
+        if: failure()
+        timeout-minutes: 2
+        env:
+          IOS_DEVICE: ${{ steps.simulator.outputs.device }}
+        run: |
+          xcrun simctl list devices available
+          if [ -n "$IOS_DEVICE" ]; then
+            xcrun simctl spawn "$IOS_DEVICE" launchctl list || true
+            xcrun simctl spawn "$IOS_DEVICE" log show --last 20m --style compact \
+              --predicate 'process == "Runner" OR eventMessage CONTAINS[c] "cachedVideoThumbnailExample"' || true
+          fi
+
   pana:
     name: Pana
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Flutter (stable)
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
 
@@ -99,22 +254,7 @@ jobs:
         run: dart pub get
 
       - name: Install pana
-        run: dart pub global activate pana
+        run: dart pub global activate pana 0.23.19
 
       - name: Run pana (full score required)
-        run: |
-          set -euo pipefail
-          pana --json . 2>/dev/null | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)
-          sections = data.get('report', {}).get('sections', [])
-          granted = sum(s.get('grantedPoints', 0) for s in sections)
-          maximum = sum(s.get('maxPoints', 0) for s in sections)
-          status = 'PASS' if granted == maximum else 'FAIL'
-          print(f'{status}: pana score {granted}/{maximum}')
-          if granted != maximum:
-              for s in sections:
-                  if s.get('grantedPoints', 0) < s.get('maxPoints', 0):
-                      print(f\"  - {s.get('title', '?')}: {s.get('grantedPoints', 0)}/{s.get('maxPoints', 0)}\")
-              sys.exit(1)
-          "
+        run: pana --exit-code-threshold 0 .

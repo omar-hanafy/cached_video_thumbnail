@@ -34,3 +34,19 @@ flutter test integration_test/thumbnail_test.dart -d <device-id>
 # Real-internet smoke tests (device must be online; hits blender.org + Mux)
 flutter test integration_test/remote_media_test.dart -d <device-id>
 ```
+
+iOS CI runs the hermetic Dart suite and native cancellation tests through
+Flutter's XCTest integration runner. To use the same path on a booted simulator,
+run from this directory after `flutter pub get`:
+
+```sh
+IOS_DEVICE=<simulator-uuid> RUNNER_TEMP="$(mktemp -d)" \
+  bash ../.github/scripts/run-ios-integration.sh
+```
+
+The script selects the integration entrypoint, enables its native result channel,
+and verifies 19 Dart tests and five Swift tests passed without skips. Its
+`THUMBNAIL_INTEGRATION_TEST` compiler define enables the Objective-C bridge only
+for this run; ordinary native-only Xcode tests do not wait for Dart results.
+Use a fresh result directory for each invocation. When adding or removing tests,
+update the expected counts in `../.github/scripts/verify-ios-test-results.py`.

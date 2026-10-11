@@ -7,11 +7,9 @@ import 'package:pigeon/pigeon.dart';
 @ConfigurePigeon(
   PigeonOptions(
     dartOut: 'lib/src/pigeon/messages.g.dart',
-    kotlinOut:
-        'android/src/main/kotlin/tech/tomars/cached_video_thumbnail/Messages.g.kt',
+    kotlinOut: 'android/src/main/kotlin/tech/tomars/cached_video_thumbnail/Messages.g.kt',
     kotlinOptions: KotlinOptions(package: 'tech.tomars.cached_video_thumbnail'),
-    swiftOut:
-        'ios/cached_video_thumbnail/Sources/cached_video_thumbnail/messages.g.swift',
+    swiftOut: 'ios/cached_video_thumbnail/Sources/cached_video_thumbnail/messages.g.swift',
     dartPackageName: 'cached_video_thumbnail',
   ),
 )
@@ -89,7 +87,7 @@ abstract class ThumbnailHostApi {
   /// Errors are surfaced as `PlatformException` whose `code` is one of:
   /// invalidSource, assetNotFound, fileNotFound, network, unsupportedMedia,
   /// extractionFailed, encodingFailed, io, cancelled.
-  @async
+  @asyncCallback
   ExtractResult extract(ExtractRequest request);
 
   /// Best-effort cancellation of an in-flight extraction (iOS only in v1).

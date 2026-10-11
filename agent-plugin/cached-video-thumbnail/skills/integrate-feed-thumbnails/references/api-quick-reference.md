@@ -1,4 +1,4 @@
-# cached_video_thumbnail 0.1.x - API quick reference
+# cached_video_thumbnail 0.2.x - API quick reference
 
 Everything below is the complete public API surface (single import:
 `package:cached_video_thumbnail/cached_video_thumbnail.dart`). Facts here
@@ -110,7 +110,11 @@ extractP50/extractP95, queueWaitP50/queueWaitP95` (percentiles over the last
 
 ## Cache behavior
 
-- Location: `<app cache dir>/thumbnail/v1/`; OS may purge it any time; the
+Use `ThumbnailSpec` to size `VideoThumbnailImage` directly. A `ResizeImage`
+wrapper bypasses its resolver and automatic cancellation tracking, though
+native extraction remains bounded by the engine.
+
+- Location: `<app cache dir>/thumbnail/v2/`; OS may purge it any time; the
   engine re-extracts on demand.
 - Hits are answered from an in-memory index: no platform channel, no disk
   stat, no decode (dimensions are stored in the file name).
@@ -122,7 +126,7 @@ extractP50/extractP95, queueWaitP50/queueWaitP95` (percentiles over the last
 
 ## Platform envelope
 
-Android minSdk 24, iOS 13+. No web/desktop backends in 0.1.x. Android
+Android minSdk 24, iOS 15+. No web/desktop backends in 0.2.x. Android
 cannot abort in-flight native work (result is banked into the cache
 instead); iOS cancels natively. Extraction of network sources downloads
 just enough bytes to decode a frame (cheap for faststart MP4s).

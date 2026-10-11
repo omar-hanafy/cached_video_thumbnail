@@ -79,6 +79,7 @@ class DiskCache {
   final Map<String, _Entry> _index = {};
   int _totalBytes = 0;
   Future<void>? _evictionRun;
+  Future<void> _mutationTail = Future<void>.value();
 
   /// Total bytes accounted in the index.
   int get totalBytes => _totalBytes;
@@ -155,6 +156,13 @@ class DiskCache {
     String tempPath, {
     required int width,
     required int height,
+  }) => _serialize(() => _commit(key, tempPath, width: width, height: height));
+
+  Future<String> _commit(
+    CacheKey key,
+    String tempPath, {
+    required int width,
+    required int height,
   }) async {
     final dot = key.fileName.lastIndexOf('.');
     final fullName =
@@ -174,13 +182,6 @@ class DiskCache {
     final previous = _index[key.fileName];
     if (previous != null) {
       _totalBytes -= previous.size;
-      if (previous.fullName != fullName) {
-        try {
-          await File(_pathOf(previous.fullName)).delete();
-        } on FileSystemException {
-          // Already gone.
-        }
-      }
     }
     final nowMs = _now().millisecondsSinceEpoch;
     _index[key.fileName] = _Entry(
@@ -192,6 +193,15 @@ class DiskCache {
       lastTouchMs: nowMs,
     );
     _totalBytes += size;
+    // Publish the new index entry before removing the previous file so a
+    // lookup during asynchronous cleanup never receives a deleted old path.
+    if (previous != null && previous.fullName != fullName) {
+      try {
+        await File(_pathOf(previous.fullName)).delete();
+      } on FileSystemException {
+        // Already gone.
+      }
+    }
     if (_totalBytes > maxBytes || _index.length > maxEntries) {
       unawaited(evictIfNeeded());
     }
@@ -200,29 +210,29 @@ class DiskCache {
 
   /// Removes the entry for [key] (used when a cached file turns out to be
   /// unreadable, e.g. purged or corrupted externally).
-  Future<void> remove(CacheKey key) async {
-    final entry = _index[key.fileName];
-    if (entry != null) await _deleteEntry(key.fileName);
-  }
+  Future<void> remove(CacheKey key) =>
+      _serialize(() => _deleteEntry(key.fileName));
 
   /// Deletes every entry whose name starts with [sourcePrefix].
-  Future<void> evictSource(String sourcePrefix) async {
+  Future<void> evictSource(String sourcePrefix) => _serialize(() async {
     final names = _index.keys.where((n) => n.startsWith(sourcePrefix)).toList();
     for (final name in names) {
       await _deleteEntry(name);
     }
-  }
+  });
 
-  /// Deletes all entries and files.
-  Future<void> clear() async {
+  /// Deletes all committed entries and stray files, preserving temporary
+  /// outputs still owned by active extraction workers.
+  Future<void> clear() => _serialize(() async {
     final names = _index.keys.toList();
     for (final name in names) {
       await _deleteEntry(name);
     }
-    // Also remove any stray files (e.g. in-flight temp files).
+    // Temporary outputs may still have a live writer. The worker cleans up
+    // failures; startup removes parts left by a previous process.
     if (directory.existsSync()) {
       await for (final entity in directory.list()) {
-        if (entity is File) {
+        if (entity is File && !entity.path.endsWith('.part')) {
           try {
             await entity.delete();
           } on FileSystemException {
@@ -231,13 +241,26 @@ class DiskCache {
         }
       }
     }
-  }
+  });
 
   /// Evicts least-recently-used entries until both caps sit at or below
   /// their 90% watermarks. Serialized: concurrent calls share one run.
   @visibleForTesting
   Future<void> evictIfNeeded() {
-    return _evictionRun ??= _evict().whenComplete(() => _evictionRun = null);
+    return _evictionRun ??= _serialize(_evict)
+        .whenComplete(() => _evictionRun = null);
+  }
+
+  // Keep the file mutation and index update of one operation together. An
+  // asynchronous rename/delete must not interleave with another mutation of
+  // the same key, and a failed operation must not poison later operations.
+  Future<T> _serialize<T>(Future<T> Function() operation) {
+    final result = _mutationTail.then((_) => operation());
+    _mutationTail = result.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {},
+    );
+    return result;
   }
 
   Future<void> _evict() async {
