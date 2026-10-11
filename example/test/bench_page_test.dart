@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:cached_video_thumbnail/cached_video_thumbnail.dart';
 import 'package:cached_video_thumbnail_example/bench_page.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -51,7 +52,7 @@ void main() {
   late _FailingExtractor extractor;
   late ThumbnailEngine engine;
 
-  setUp(() async {
+  Future<void> prepare() async {
     directory = await Directory.systemTemp.createTemp('benchmark_test');
     extractor = _FailingExtractor();
     engine = ThumbnailEngine.forTesting(
@@ -60,21 +61,49 @@ void main() {
       config: const ThumbnailEngineConfig(negativeCacheTtl: Duration.zero),
     );
     engine.onEvent = extractor.onEvent;
-  });
+    // The scroll demo is independent of the benchmark batch. Cache its images
+    // before entering the fake widget zone so this test exercises only the
+    // benchmark's real asynchronous extraction/failure lifecycle.
+    final image = await createTestImage();
+    for (var index = 0; index < 40; index++) {
+      final provider = VideoThumbnailImage(
+        VideoSource.asset(
+          index.isEven
+              ? 'assets/fixtures/landscape.mp4'
+              : 'assets/fixtures/portrait_rot90.mp4',
+        ),
+        spec: ThumbnailSpec(maxWidth: 200 + index, maxHeight: 280),
+        engine: engine,
+      );
+      PaintingBinding.instance.imageCache.putIfAbsent(
+        provider,
+        () => OneFrameImageStreamCompleter(
+          SynchronousFuture(ImageInfo(image: image.clone())),
+        ),
+      );
+    }
+    image.dispose();
+  }
 
-  tearDown(() => directory.delete(recursive: true));
+  tearDown(() async {
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    await directory.delete(recursive: true);
+  });
 
   testWidgets(
     'benchmark handles out-of-order failures and locks its controls',
     (tester) async {
+      await tester.runAsync(prepare);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: BenchPage(engine: engine)),
+        ),
+      );
       await tester.runAsync(() async {
-        await engine.clearCache();
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(body: BenchPage(engine: engine)),
-          ),
-        );
-        await tester.tap(find.text('Run cold'));
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Run cold'))
+            .onPressed!();
         await extractor.started.future;
       });
       await tester.pump();
@@ -110,14 +139,16 @@ void main() {
   testWidgets('finishing a benchmark after disposal does not call setState', (
     tester,
   ) async {
+    await tester.runAsync(prepare);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: BenchPage(engine: engine)),
+      ),
+    );
     await tester.runAsync(() async {
-      await engine.clearCache();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: BenchPage(engine: engine)),
-        ),
-      );
-      await tester.tap(find.text('Run warm'));
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Run warm'))
+          .onPressed!();
       await extractor.started.future;
     });
     await tester.pump();

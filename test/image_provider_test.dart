@@ -217,23 +217,33 @@ void main() {
   testWidgets('disposing an Image widget cancels its pending thumbnail', (
     tester,
   ) async {
-    final settled = Completer<void>();
-    engine.onEvent = (event) {
-      if (event.kind == ThumbnailEventKind.extracted) settled.complete();
-    };
-    extractor.gated = true;
+    late Completer<void> settled;
+    late VideoThumbnailImage provider;
+    late ImageStream pendingStream;
+    final bootstrapListener = ImageStreamListener((info, _) => info.dispose());
+    // Start filesystem work in the real async zone, then let the widget adopt
+    // that same pending stream. Its removal must cancel the sole consumer.
     await tester.runAsync(() async {
-      await engine.clearCache();
-      await tester.pumpWidget(
-        SizedBox(
-          width: 20,
-          height: 20,
-          child: Image(image: VideoThumbnailImage(asset, engine: engine)),
-        ),
+      settled = Completer<void>();
+      extractor = FakeExtractor()..gated = true;
+      engine = ThumbnailEngine.forTesting(
+        extractor: extractor,
+        directory: Directory('${root.path}/widget-cache'),
       );
+      engine.onEvent = (event) {
+        if (event.kind == ThumbnailEventKind.extracted) settled.complete();
+      };
+      provider = VideoThumbnailImage(asset, engine: engine);
+      pendingStream = provider.resolve(ImageConfiguration.empty);
+      pendingStream.addListener(bootstrapListener);
       await extractor.waitForCalls(1);
     });
+    await tester.pumpWidget(
+      SizedBox(width: 20, height: 20, child: Image(image: provider)),
+    );
+    pendingStream.removeListener(bootstrapListener);
     expect(extractor.callCount, 1);
+    expect(extractor.cancelled, isEmpty);
 
     await tester.pumpWidget(const SizedBox());
     expect(extractor.cancelled, hasLength(1));
