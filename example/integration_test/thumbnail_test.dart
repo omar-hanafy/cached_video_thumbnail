@@ -18,7 +18,13 @@ bool isPng(List<int> bytes) =>
     bytes[3] == 0x47;
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() {
+    // iOS simulators enable semantics when their first view appears. Establish
+    // that platform-owned handle before widget tests record their leak counts.
+    binding.platformDispatcher.semanticsEnabledTestValue = true;
+  });
+  tearDownAll(binding.platformDispatcher.clearSemanticsEnabledTestValue);
 
   late Directory root;
   late ThumbnailEngine engine;
